@@ -193,29 +193,82 @@ const Reports = (() => {
   }
 
   /* ---------- KI-Bild zum Tagebuch / Bericht ---------- */
+  // Alle Stile lehnen sich an das Design von Naruto an
   const IMG_STYLES = {
-    skizze: { label: '✏️ Skizze', en: 'pencil and ink field sketch on an aged, slightly stained notebook page, like an explorer\'s journal, loose cross-hatching, a few small illegible margin notes' },
-    rolle: { label: '📜 Schriftrolle', en: 'traditional Japanese sumi-e ink painting on an unrolled ancient washi paper scroll, muted earthy colors, expressive brush strokes, a column of illegible brush calligraphy at the side' },
-    manga: { label: '🖋️ Manga', en: 'black-and-white manga panel, dynamic composition, clean ink lines, screentone shading, dramatic angle' },
-    foto: { label: '📷 Foto', en: 'cinematic photorealistic photograph, natural light, shallow depth of field, film still' },
+    anime: { label: '🎬 Anime', en: 'Naruto anime style (Studio Pierrot look): clean cel shading, bold outlines, vibrant colors, cinematic anime key frame' },
+    manga: { label: '🖋️ Manga', en: 'Naruto manga style (Masashi Kishimoto look): black-and-white manga panel, clean ink lines, screentone shading, dynamic angle' },
+    skizze: { label: '✏️ Skizze', en: 'Naruto-style character/scene sketch in pencil and ink on an aged notebook page, like a shinobi field journal, loose cross-hatching, a few illegible margin notes' },
+    rolle: { label: '📜 Schriftrolle', en: 'Naruto-world artwork painted as traditional sumi-e ink on an unrolled ancient ninja scroll, muted earthy colors, expressive brush strokes, illegible calligraphy at the side' },
   };
 
   function imagePrompt(session, kind, style) {
     const me = Store.myChar(session.myCharId);
-    const age = ageOf(session);
-    const parts = (session.participants || []).map(Store.person).filter(Boolean);
+    const age = ageOf(session), rank = rankOf(session);
     const text = kind === 'diary' ? (session.diary && session.diary.text) : expeditionText(session);
-    const who = [
-      me ? `Main character: ${me.name}${age ? ', ' + age + ' years old' : ''}${rankOf(session) ? ', rank ' + rankOf(session) : ''}${me.looks ? ', appearance: ' + me.looks : ''}.` : '',
-      ...parts.filter(p => p.looks).map(p => `${p.name}${p.age ? ' (' + p.age + ')' : ''}: ${p.looks}.`),
-    ].filter(Boolean).join(' ');
-    return {
-      system: 'You write prompts for an image generation model. Output ONLY the prompt in English, max 90 words, no preamble.',
-      user: `Pick the single most striking, visually clear moment from this ${kind === 'diary' ? 'diary entry' : 'expedition report'} of a Japanese-inspired ninja fantasy roleplay and describe it as one image.\n` +
-        `Rules: original characters only (never depict existing anime or manga characters by name or likeness); describe characters by their appearance, age-appropriate body proportions; describe setting, lighting, mood and composition; no readable text, letters or logos in the image.\n` +
-        (who ? `Characters: ${who}\n` : '') +
-        `Art style (must be stated at the end of the prompt): ${IMG_STYLES[style].en}.\n\nTEXT:\n${text}`,
+    const topic = imageTopic(session, kind);
+    const cast = imageCast(session, topic.scene);
+    const describe = (c, isMe) => {
+      const bits = [
+        (isMe ? age : c.age) && `${isMe ? age : c.age} years old`,
+        (isMe ? rank : c.rank) && `ninja rank ${isMe ? rank : c.rank}`,
+        c.village && `from ${c.village} (wears that village's forehead protector)`,
+        c.clan && `${c.clan} clan`,
+        c.profession && `works as ${c.profession}`,
+        c.looks && `appearance: ${c.looks}`,
+        c.imageId && 'a reference portrait is attached – match face, hair, colors and outfit exactly',
+      ].filter(Boolean);
+      return `- ${c.name}${isMe ? ' (main character, the diary writer)' : ''}: ${bits.join('; ') || 'no details known – keep neutral'}`;
     };
+    const who = [me ? describe(me, true) : '', ...cast.map(p => describe(p, false))].filter(Boolean).join('\n');
+    return {
+      system: 'You write prompts for an image generation model. Output ONLY the prompt in English, 80–140 words, no preamble.',
+      user: `Describe ONE image for a ${kind === 'diary' ? 'diary entry' : 'mission report'} of a Naruto roleplay.\n` +
+        (topic.text ? `SUBJECT (chosen by the player – depict exactly this): ${topic.text}\n` : `SUBJECT: pick the single most striking, visually clear moment of the text.\n`) +
+        `CHARACTERS – depict them exactly as specified, never invent different hair, eye colors or outfits:\n${who || '- (no stored character details)'}\n` +
+        `RULES: the look must follow the Naruto anime/manga design (ninja world of the Hidden Villages, shinobi outfits, forehead protectors, flak vests for Chunin and above, Japanese-inspired architecture and nature); ` +
+        `these are original roleplay characters – do not depict canon Naruto characters; age-appropriate body proportions; describe setting, lighting, mood and composition; no readable text, letters or logos.\n` +
+        `Art style (state it at the end of the prompt): ${IMG_STYLES[style].en}.\n\nTEXT:\n${text}`,
+    };
+  }
+
+  // Ohne KI: Bildbeschreibung aus Motiv + gespeicherten Figuren-Daten zusammensetzen (auf Deutsch, für ChatGPT/Gemini)
+  function localImagePrompt(session, kind, style) {
+    const me = Store.myChar(session.myCharId);
+    const topic = imageTopic(session, kind);
+    const cast = imageCast(session, topic.scene);
+    const line = (c, isMe) => '- ' + [c.name, (isMe ? ageOf(session) : c.age) && `${isMe ? ageOf(session) : c.age} Jahre`, (isMe ? rankOf(session) : c.rank),
+      c.village && `aus ${c.village} (mit dessen Stirnband)`, c.clan && `Clan ${c.clan}`, c.profession, c.looks && `Aussehen: ${c.looks}`].filter(Boolean).join(', ');
+    const styleDe = { anime: 'im Stil des Naruto-Animes (klare Konturen, Cel-Shading, kräftige Farben)', manga: 'als Schwarz-Weiß-Panel im Stil des Naruto-Mangas (Tusche, Rasterfolie)', skizze: 'als Bleistift-/Tusche-Skizze im Naruto-Stil auf einer alten Notizbuchseite', rolle: 'als Sumi-e-Tuschmalerei im Naruto-Stil auf einer alten Ninja-Schriftrolle' }[style];
+    return `Motiv: ${topic.text || '(bitte Motiv ergänzen)'}\n` +
+      `Figuren (genau so darstellen, keine anderen Haare/Augen/Kleidung erfinden):\n${[me ? line(me, true) : '', ...cast.map(p => line(p, false))].filter(Boolean).join('\n')}\n` +
+      `Design: Naruto-Welt (Shinobi-Kleidung, Stirnbänder, Chunin-Westen ab Chunin, japanisch inspirierte Dörfer und Natur). Eigene RP-Figuren, keine bekannten Naruto-Charaktere. Kein Text im Bild.\n` +
+      `Stil: ${styleDe}.`;
+  }
+
+  // Worüber das Bild sein soll: gewählte Szene und/oder eigene Beschreibung
+  function imageTopic(session, kind) {
+    const t = (session.imageTopics || {})[kind] || {};
+    const scene = (session.analysis && session.analysis.scenes || [])[t.scene];
+    const text = [scene ? `${scene.title}: ${scene.summary}` : '', (t.text || '').trim()].filter(Boolean).join(' – ');
+    return { scene, text };
+  }
+
+  // Welche Personen aufs Bild gehören: Personen der gewählten Szene, sonst alle Beteiligten (max. 5)
+  function imageCast(session, scene) {
+    const parts = (session.participants || []).map(Store.person).filter(Boolean);
+    if (scene && (scene.people || []).length) {
+      const names = scene.people.map(n => n.toLowerCase());
+      const hit = parts.filter(p => names.some(n => n.includes((p.firstName || p.name).toLowerCase()) || (p.lastName && n.includes(p.lastName.toLowerCase()))));
+      if (hit.length) return hit.slice(0, 5);
+    }
+    return parts.slice(0, 5);
+  }
+
+  // Porträts als Vorlage: eigener Charakter + abgebildete Personen mit hinterlegtem Bild
+  function imageRefs(session, kind) {
+    const me = Store.myChar(session.myCharId);
+    const cast = imageCast(session, imageTopic(session, kind).scene);
+    return [me, ...cast].filter(c => c && c.imageId).slice(0, 4).map(c => ({ name: c.name, imageId: c.imageId }));
   }
 
   /* ---------- Textexport ---------- */
@@ -254,6 +307,6 @@ const Reports = (() => {
 
   return {
     EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition,
-    diaryPrompt, refinePrompt, expeditionPrompt, analyzePrompt, imagePrompt, IMG_STYLES, rankOf, ageOf, diaryText, expeditionText, charLine,
+    diaryPrompt, refinePrompt, expeditionPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, expeditionText, charLine,
   };
 })();

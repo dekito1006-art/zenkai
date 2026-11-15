@@ -282,6 +282,46 @@
     });
     return found;
   }
+  // Tippfehler-tolerante Namenssuche (Levenshtein): "Bukagawe" ≈ "Bakagane"
+  function lev(a, b) {
+    const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= n; j++) d[0][j] = j;
+    for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[m][n];
+  }
+  function similarPerson(name, exceptIds = []) {
+    const toks = str(name).toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+    let best = null, bestSim = 0;
+    D().people.forEach(p => {
+      if (exceptIds.includes(p.id)) return;
+      [p.firstName, p.lastName].filter(x => x && x.length >= 3).forEach(x => {
+        const xs = x.toLowerCase();
+        toks.forEach(t => {
+          const dist = lev(t, xs), sim = 1 - dist / Math.max(t.length, xs.length);
+          if (dist <= 3 && sim >= 0.6 && sim < 1 && sim > bestSim) { best = p; bestSim = sim; }
+        });
+      });
+    });
+    return best;
+  }
+
+  // Erkannte Person einer bekannten zuordnen; optional die Schreibweise in Erzählung und Szenen korrigieren
+  function linkDetected(s, i, personId, fix) {
+    const det = state.detected[i], p = Store.person(personId);
+    if (!det || !p) return;
+    if (!s.participants.includes(p.id)) s.participants.push(p.id);
+    if (fix) {
+      const pairs = [[det.firstName, p.firstName || p.name], [det.lastName, p.lastName]].filter(([a, b]) => a && b && a !== b);
+      const rep = t => pairs.reduce((acc, [a, b]) => acc.replace(new RegExp(`\\b${a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), b), t || '');
+      s.notes = rep(s.notes);
+      ((s.analysis && s.analysis.scenes) || []).forEach(x => { x.summary = rep(x.summary); x.title = rep(x.title); x.people = (x.people || []).map(rep); });
+    }
+    state.detected.splice(i, 1);
+    Store.save(); render();
+    toast(`Zugeordnet: ${p.name}${fix ? ' (Schreibweise korrigiert)' : ''}`);
+  }
+
   function findPerson(name) {
     const n = str(name).toLowerCase(); if (!n) return null;
     const exact = D().people.find(p => p.name.toLowerCase() === n);
@@ -315,11 +355,19 @@
       firstName: str(p.firstName), lastName: str(p.lastName), rank: str(p.rank), village: str(p.village), division: str(p.division),
       clan: str(p.clan), profession: str(p.profession), notes: str(p.note),
     })).filter(p => (p.firstName || p.lastName) && !known.has(fullName(p).toLowerCase()));
-    state.detected.forEach(p => { p.name = fullName(p); });
+    state.detected.forEach(p => { p.name = fullName(p); const sim = similarPerson(p.name); if (sim) p.maybe = sim.id; });
     // Bekannte Personen: fehlenden Beruf automatisch eintragen, Abweichungen als Vorschlag
     state.updates = []; state.autoApplied = [];
     arr(r.updates).forEach(u => {
-      const p = findPerson(u.name); if (!p) return;
+      const p = findPerson(u.name);
+      if (!p) { // KI meint eine bekannte Person, aber anders geschrieben → als Rückfrage anbieten
+        const sim = similarPerson(u.name);
+        if (sim && !state.detected.some(d => d.maybe === sim.id)) {
+          const [f, ...l] = str(u.name).split(/\s+/);
+          state.detected.push({ firstName: f || '', lastName: l.join(' '), name: str(u.name), maybe: sim.id, profession: str(u.profession), rank: str(u.rank), notes: str(u.note) });
+        }
+        return;
+      }
       if (!s.participants.includes(p.id)) s.participants.push(p.id);
       const prof = str(u.profession), rank = str(u.rank);
       if (prof && !p.profession) { p.profession = prof; state.autoApplied.push(`${p.name}: Beruf „${prof}“`); }
@@ -362,9 +410,17 @@
     return `<div class="detected">
       ${auto.length ? `<div class="small">✓ <strong>Automatisch ergänzt:</strong> ${esc(auto.join(', '))}</div>` : ''}
       ${det.length ? `<div class="small"><strong>Neu erkannt:</strong> mit einem Tipp ins Verzeichnis übernehmen</div>` : ''}
-      ${det.map((p, i) => `<div class="det-row"><div><strong>${esc(p.name)}</strong>${!p.firstName || !p.lastName ? ' <span class="badge">Name unvollständig</span>' : ''} <span class="muted small">${esc(facts(p))}</span>
-        ${p.notes ? `<div class="muted small">${esc(p.notes)}</div>` : ''}</div>
-        <div class="btns"><button class="btn small" data-det-add="${i}">Übernehmen</button><button class="btn ghost small" data-det-skip="${i}">✕</button></div></div>`).join('')}
+      ${det.map((p, i) => {
+        const m = p.maybe && Store.person(p.maybe);
+        const pick = `<select data-det-pick="${i}" class="det-pick"><option value="">${m ? 'Andere Person zuordnen…' : 'Ist eine bekannte Person…'}</option>${[...D().people].sort(byName).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`;
+        return m ? `<div class="det-row maybe"><div>❓ Ist <strong>„${esc(p.name)}“</strong> dieselbe Person wie <strong>${esc(m.name)}</strong>?
+            <div class="muted small">Ähnliche Schreibweise – evtl. ein Tipp- oder Diktierfehler.</div>
+            <label class="check small"><input type="checkbox" id="det-fix-${i}" checked><span>Schreibweise in Erzählung und Szenen korrigieren</span></label></div>
+          <div class="btns"><button class="btn small" data-det-same="${i}">Ja, dieselbe</button><button class="btn ghost small" data-det-add="${i}">Nein, neue Person</button>${pick}</div></div>`
+        : `<div class="det-row"><div><strong>${esc(p.name)}</strong>${!p.firstName || !p.lastName ? ' <span class="badge">Name unvollständig</span>' : ''} <span class="muted small">${esc(facts(p))}</span>
+            ${p.notes ? `<div class="muted small">${esc(p.notes)}</div>` : ''}</div>
+          <div class="btns"><button class="btn small" data-det-add="${i}">Übernehmen</button><button class="btn ghost small" data-det-skip="${i}">✕</button>${D().people.length ? pick : ''}</div></div>`;
+      }).join('')}
       ${upd.length ? `<div class="small"><strong>Neue Infos zu bekannten Personen:</strong></div>` : ''}
       ${upd.map((u, i) => `<div class="det-row"><div><strong>${esc(u.name)}</strong> <span class="muted small">${esc(Object.entries(u.changes).map(([k, v]) => (k === 'profession' ? 'Beruf' : 'Rang') + ' → ' + v).join(', '))}</span>
         ${u.note ? `<div class="muted small">${esc(u.note)}</div>` : ''}</div>
@@ -417,40 +473,70 @@
 
   /* ---------- KI-Bild zum Tagebuch / Bericht (je eins) ---------- */
   const imgHolder = (s, kind) => kind === 'diary' ? s.diary : s.expedition;
+  const imgStyle = h => Reports.IMG_STYLES[h.imageStyle] ? h.imageStyle : 'anime';
+  const imgTopic = (s, kind) => { s.imageTopics = s.imageTopics || {}; return (s.imageTopics[kind] = s.imageTopics[kind] || {}); };
+
   function imgSection(s, kind) {
-    const h = imgHolder(s, kind), style = h.imageStyle || 'skizze';
+    const h = imgHolder(s, kind), style = imgStyle(h), topic = imgTopic(s, kind), ai = AI.available();
     const hasText = kind === 'diary' ? !!(s.diary.text || '').trim() : !!(s.expedition.verlauf || s.expedition.auftrag);
+    const scenes = (s.analysis && s.analysis.scenes) || [];
+    const refs = Reports.imageRefs(s, kind);
+    const canPrompt = hasText && (ai || (topic.text || '').trim() || topic.scene != null);
     return `<div class="report-img">
       <h4>🎨 Bild zum ${kind === 'diary' ? 'Eintrag' : 'Bericht'}</h4>
-      ${h.imageId ? `<img data-img="${esc(h.imageId)}" alt="KI-Bild">
+      ${h.imageId ? `<img data-img="${esc(h.imageId)}" alt="Bild">
         <div class="btns"><button class="btn small" data-img-share="${kind}">Teilen</button><button class="btn ghost small" data-img-dl="${kind}">Speichern</button><button class="btn ghost small danger" data-img-del="${kind}">Entfernen</button></div>` : ''}
+      <div class="img-topic">
+        <span class="muted small">Worüber soll das Bild sein?</span>
+        ${scenes.length ? `<div class="chips">
+          ${ai ? `<button class="chip ${topic.scene == null ? 'on' : ''}" data-img-scene="${kind}:">🎲 KI wählt</button>` : ''}
+          ${scenes.map((x, i) => `<button class="chip ${topic.scene === i ? 'on' : ''}" data-img-scene="${kind}:${i}">${esc(x.title || 'Szene ' + (i + 1))}</button>`).join('')}</div>` : ''}
+        <div class="qa-a"><textarea id="imgt-${kind}" data-img-topic="${kind}" rows="2" placeholder="Optional selbst beschreiben, z. B. „Keijiro hält stolz seine zwei neuen Schwerter vor der Schmiede hoch“">${esc(topic.text || '')}</textarea>${micBtn('imgt-' + kind)}</div>
+      </div>
       <div class="chips">${Object.entries(Reports.IMG_STYLES).map(([k, v]) => `<button class="chip ${style === k ? 'on' : ''}" data-img-style="${kind}:${k}">${v.label}</button>`).join('')}</div>
+      <p class="muted small">${refs.length ? `🖼 Vorlage für die Figuren: Porträts von ${esc(refs.map(r => r.name).join(', '))}` : '💡 Tipp: Mit Porträts und „Aussehen“ im Verzeichnis sehen die Figuren auf jedem Bild gleich aus.'}</p>
       <div class="btns">
-        ${AI.available() ? `<button class="btn small" data-img-gen="${kind}" ${hasText ? '' : 'disabled'}>🎨 ${h.imageId ? 'Neues Bild erstellen' : 'Bild erstellen lassen'}</button>
-        <button class="btn ghost small" data-img-prompt="${kind}" ${hasText ? '' : 'disabled'}>📋 Für ChatGPT</button>` : ''}
-        <label class="btn ${AI.available() ? 'ghost' : ''} small">📤 ${h.imageId ? 'Anderes Bild' : 'Eigenes Bild hochladen'}<input type="file" accept="image/*" data-img-up="${kind}" hidden></label>
+        <button class="btn small" data-img-prompt="${kind}" ${canPrompt ? '' : 'disabled'}>📋 Bild-Beschreibung erstellen</button>
+        ${ai ? `<button class="btn ghost small" data-img-gen="${kind}" ${hasText ? '' : 'disabled'}>🎨 Direkt erstellen (Gemini, kostenpflichtig)</button>` : ''}
+        <label class="btn ghost small">📤 ${h.imageId ? 'Anderes Bild' : 'Bild hochladen'}<input type="file" accept="image/*" data-img-up="${kind}" hidden></label>
       </div>
       ${h.imagePrompt && state.showPrompt === kind ? `<div class="note prompt-box">
-        <p><strong>So geht's ohne Kosten:</strong> Die Beschreibung ist kopiert (inkl. „Erstelle ein Bild:“). In der <strong>ChatGPT-App</strong> einfügen und absenden, das Bild speichern und hier über <strong>📤 Eigenes Bild</strong> hochladen.</p>
+        <p><strong>Beschreibung ist kopiert.</strong> ${refs.length ? 'Teile zuerst die Porträts in die App (damit die Figuren stimmen), dann ' : ''}in <strong>ChatGPT</strong> oder <strong>Gemini</strong> einfügen und absenden. Das Bild speichern und hier über <strong>📤 Bild hochladen</strong> hinterlegen.</p>
         <pre class="out">${esc(h.imagePrompt)}</pre>
-        <div class="btns"><button class="btn small" data-img-copy="${kind}">Nochmal kopieren</button><a class="btn ghost small" href="https://chatgpt.com/" target="_blank" rel="noopener">ChatGPT öffnen</a></div></div>` : ''}
-      <p class="muted small">${!AI.available() ? 'Z. B. eine eigene Zeichnung, ein Screenshot aus dem Spiel oder ein Bild aus einer Bild-KI.' : hasText ? '„Bild erstellen lassen“ nutzt Gemini – die Bildmodelle sind dort nur mit hinterlegter Abrechnung verfügbar (ca. 4 Cent/Bild). Kostenlos: „Für ChatGPT“ (mit deinem Abo) oder ein eigenes Bild hochladen.' : 'Erst den Text schreiben (lassen), dann das Bild.'}</p>
+        <div class="btns">
+          <a class="btn small" href="https://chatgpt.com/" target="_blank" rel="noopener" data-img-open="${kind}">ChatGPT öffnen</a>
+          <a class="btn small" href="https://gemini.google.com/app" target="_blank" rel="noopener" data-img-open="${kind}">Gemini öffnen</a>
+          ${refs.length ? `<button class="btn ghost small" data-img-refs="${kind}">🖼 Porträts teilen (${refs.length})</button>` : ''}
+          <button class="btn ghost small" data-img-copy="${kind}">Nochmal kopieren</button></div></div>` : ''}
+      <p class="muted small">${!hasText ? 'Erst den Text schreiben (lassen), dann das Bild.' : !ai ? 'Ohne KI: Wähle eine Szene oder beschreibe das Motiv – Zenkai baut daraus die Beschreibung mit den Daten deiner Figuren.' : 'Kostenlos über ChatGPT oder Gemini (mit deinem Konto). „Direkt erstellen“ braucht bei Google eine hinterlegte Abrechnung (ca. 4 Cent/Bild).'}</p>
     </div>`;
   }
 
-  // Bildbeschreibung erstellen (bzw. vorhandene wiederverwenden), kopieren und anzeigen
-  async function imagePromptFor(s, kind, fresh) {
-    const h = imgHolder(s, kind), style = h.imageStyle || 'skizze';
-    if (fresh || !h.imagePrompt || h.imagePromptStyle !== style) {
-      h.imagePrompt = await AI.complete(Reports.imagePrompt(s, kind, style));
-      h.imagePromptStyle = style; Store.save();
-    }
+  // Bildbeschreibung erstellen, kopieren und anzeigen (mit KI; ohne KI aus Vorlage)
+  async function imagePromptFor(s, kind) {
+    const h = imgHolder(s, kind), style = imgStyle(h);
+    h.imagePrompt = AI.available() ? (await AI.complete(Reports.imagePrompt(s, kind, style))).trim() : Reports.localImagePrompt(s, kind, style);
+    h.imagePromptStyle = style; Store.save();
     return h.imagePrompt;
   }
+  const promptForChat = (s, kind) => {
+    const n = Reports.imageRefs(s, kind).length;
+    return `Erstelle ein Bild${n ? ` (die ${n} angehängten Porträts sind die Vorlage für die Figuren)` : ''}: ${imgHolder(s, kind).imagePrompt}`;
+  };
   async function showPromptForChatGPT(s, kind) {
-    const p = await imagePromptFor(s, kind, false);
-    copy('Erstelle ein Bild: ' + p);
+    await imagePromptFor(s, kind);
+    copy(promptForChat(s, kind));
     state.showPrompt = kind; render();
+  }
+  async function shareRefs(s, kind) {
+    const files = [];
+    for (const r of Reports.imageRefs(s, kind)) {
+      const b = await Images.blobOf(r.imageId);
+      if (b) files.push(new File([b], `${r.name.replace(/[^\wäöüß-]+/gi, '_')}.jpg`, { type: b.type || 'image/jpeg' }));
+    }
+    if (!files.length) throw new Error('Keine Porträts gefunden.');
+    if (navigator.canShare && navigator.canShare({ files })) { try { await navigator.share({ files, title: 'Porträts' }); } catch (e) { } }
+    else files.forEach(f => { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); });
   }
   async function setOwnImage(s, kind, file) {
     const h = imgHolder(s, kind);
@@ -463,14 +549,14 @@
 
   async function generateReportImage(s, kind) {
     const h = imgHolder(s, kind);
-    const me = Store.myChar(s.myCharId);
-    const prompt = await imagePromptFor(s, kind, true);
-    const ref = me && me.imageId ? await Images.blobOf(me.imageId) : null;
+    const prompt = await imagePromptFor(s, kind);
+    const refs = [];
+    for (const r of Reports.imageRefs(s, kind)) { const b = await Images.blobOf(r.imageId); if (b) refs.push({ name: r.name, blob: b }); }
     let raw;
-    try { raw = await AI.generateImage(prompt, ref); }
+    try { raw = await AI.generateImage(prompt, refs); }
     catch (e) {
-      // Kein Bild-Kontingent → Beschreibung für ChatGPT anbieten, damit es trotzdem kostenlos geht
-      if (/Kontingent|quota|nur mit Gemini/i.test(e.message)) { copy('Erstelle ein Bild: ' + prompt); state.showPrompt = kind; render(); }
+      // Kein Bild-Kontingent → Beschreibung für ChatGPT/Gemini anbieten, damit es trotzdem kostenlos geht
+      if (/Kontingent|quota|nur mit Gemini/i.test(e.message)) { copy(promptForChat(s, kind)); state.showPrompt = kind; render(); }
       throw e;
     }
     const small = await Images.resize(raw, 1280, false);
@@ -563,6 +649,7 @@
           <input id="bulk-value" list="dl-bulk" placeholder="${esc((BULK_FIELDS.find(x => x[0] === bf) || [])[1] || '')} wählen oder eintippen (leer = entfernen)">${dl('dl-bulk', bulkList(bf))}
           <button class="btn primary small" data-act="bulk-apply" ${sel.size ? '' : 'disabled'}>Zuweisen</button>
           <button class="btn ghost danger small" data-act="bulk-delete" ${sel.size ? '' : 'disabled'}>Löschen</button>
+          <button class="btn ghost small merge-btn" data-act="bulk-merge" ${sel.size >= 2 ? '' : 'disabled'}>🔗 Zusammenführen${sel.size >= 2 ? ` (${sel.size})` : ''}</button>
         </div></div>` : ''}
       <div class="filters">
         <input id="q" placeholder="🔎 Name, Beruf, Clan, Notiz…" value="${esc(state.q)}">
@@ -575,6 +662,46 @@
         <div class="cards">${open.map(card).join('')}</div>` : ''}
       ${done.length ? `${open.length ? `<div class="section-head"><h3>Alle Personen (${done.length})</h3></div>` : ''}<div class="cards">${done.map(card).join('')}</div>` : ''}
       ${!list.length ? '<div class="empty">Keine Personen gefunden.</div>' : ''}`;
+  }
+
+  /* Zwei oder mehr Einträge derselben Person zusammenführen */
+  const MERGE_FIELDS = ['firstName', 'lastName', 'profession', 'rank', 'village', 'division', 'clan', 'age', 'looks', 'relation', 'imageId'];
+  const filled = p => MERGE_FIELDS.filter(f => p[f]).length + (p.notes ? 1 : 0);
+
+  function mergeForm() {
+    const ps = D().people.filter(p => state.sel.has(p.id)).sort((a, b) => filled(b) - filled(a));
+    const count = id => D().sessions.filter(x => (x.participants || []).includes(id)).length;
+    modal(`<h2>🔗 Einträge zusammenführen</h2>
+      <p class="muted small">Wähle den Eintrag, der bleiben soll. Leere Felder werden aus den anderen ergänzt, Notizen zusammengefügt, und alle Sessions zeigen danach auf diese Person. Die anderen Einträge werden gelöscht.</p>
+      <form id="merge-form" class="form">
+        ${ps.map((p, i) => `<label class="merge-opt"><input type="radio" name="main" value="${p.id}" ${i === 0 ? 'checked' : ''}>
+          <span class="who">${avatar(p.imageId, p.name)}<span><strong>${esc(p.name)}</strong><br><span class="muted small">${esc([p.profession, p.rank, p.village].filter(Boolean).join(' · ') || 'keine weiteren Angaben')} · ${count(p.id)} Session(s)</span></span></span></label>`).join('')}
+        <div class="row-between"><span></span><div class="btns"><button type="button" class="btn ghost" data-act="close">Abbrechen</button><button class="btn primary">Zusammenführen</button></div></div>
+      </form>`);
+    Images.hydrate($('#modal-box'));
+    $('#merge-form').onsubmit = ev => {
+      ev.preventDefault();
+      const mainId = new FormData(ev.target).get('main');
+      const ids = ps.map(p => p.id);
+      const name = mergePeople(mainId, ids);
+      state.sel.clear(); closeModal(); render();
+      toast(`${ids.length} Einträge zu „${name}“ zusammengeführt ✓`);
+    };
+  }
+
+  function mergePeople(mainId, ids) {
+    const main = Store.person(mainId);
+    const others = ids.filter(id => id !== mainId).map(Store.person).filter(Boolean);
+    others.forEach(o => {
+      MERGE_FIELDS.forEach(f => { if (!main[f] && o[f]) main[f] = o[f]; });
+      if (o.notes && !(main.notes || '').includes(o.notes)) main.notes = [main.notes, o.notes].filter(Boolean).join('\n');
+    });
+    others.forEach(o => { if (o.imageId && o.imageId !== main.imageId) Images.remove(o.imageId); });
+    main.name = fullName(main);
+    D().sessions.forEach(x => { x.participants = [...new Set((x.participants || []).map(pid => ids.includes(pid) ? mainId : pid))]; });
+    D().people = D().people.filter(p => p.id === mainId || !ids.includes(p.id));
+    Store.save();
+    return main.name;
   }
 
   function bulkApply() {
@@ -841,6 +968,7 @@
     if (d.mychar) { const c = Store.myChar(d.mychar); return personForm({ ...c, _mine: true }, 'Charakter bearbeiten', v => { Object.assign(c, v); Store.save(); }); }
     if (d.detAdd !== undefined) { const p = savePerson(null, state.detected[d.detAdd]); s.participants.push(p.id); state.detected.splice(d.detAdd, 1); Store.save(); render(); return toast(p.name + ' ins Verzeichnis übernommen'); }
     if (d.detSkip !== undefined) { state.detected.splice(d.detSkip, 1); return render(); }
+    if (d.detSame !== undefined) { const fx = $('#det-fix-' + d.detSame); return linkDetected(s, +d.detSame, state.detected[d.detSame].maybe, fx ? fx.checked : false); }
     if (d.updApply !== undefined) {
       const u = state.updates[d.updApply], p = Store.person(u.id);
       if (p) { Object.assign(p, u.changes); Store.save(); toast(`${p.name} aktualisiert`); }
@@ -866,7 +994,13 @@
     if (d.imgStyle) { const [k, st] = d.imgStyle.split(':'); imgHolder(s, k).imageStyle = st; Store.save(); return render(); }
     if (d.imgGen) return busy(t, () => generateReportImage(s, d.imgGen));
     if (d.imgPrompt) return busy(t, () => showPromptForChatGPT(s, d.imgPrompt));
-    if (d.imgCopy) return copy('Erstelle ein Bild: ' + imgHolder(s, d.imgCopy).imagePrompt);
+    if (d.imgCopy) return copy(promptForChat(s, d.imgCopy));
+    if (d.imgOpen) { copy(promptForChat(s, d.imgOpen)); return; } // Link öffnet sich normal, Beschreibung liegt in der Zwischenablage
+    if (d.imgRefs) return shareRefs(s, d.imgRefs).catch(e => toast(e.message, 'error'));
+    if (d.imgScene !== undefined) {
+      const [k, i] = d.imgScene.split(':'); const tp = imgTopic(s, k);
+      tp.scene = i === '' ? null : +i; Store.save(); return render();
+    }
     if (d.imgDel) {
       if (!confirm('Bild entfernen?')) return;
       const h = imgHolder(s, d.imgDel); Images.remove(h.imageId); h.imageId = ''; Store.save(); return render();
@@ -902,6 +1036,7 @@
       }
       case 'bulk-open': D().people.filter(incomplete).forEach(p => state.sel.add(p.id)); return render();
       case 'bulk-apply': return bulkApply();
+      case 'bulk-merge': return mergeForm();
       case 'bulk-delete': {
         const n = state.sel.size;
         if (!confirm(`${n} Person(en) aus dem Verzeichnis löschen? Das kann nicht rückgängig gemacht werden.`)) return;
@@ -978,6 +1113,12 @@
     if (d.qa !== undefined) { s.qa[d.qa].a = el.value; return Store.saveSoon(); }
     if (d.scene !== undefined) { s.analysis.scenes[d.scene][d.k] = el.value; return Store.saveSoon(); }
     if (el.id === 'bulk-field') { state.bulkField = el.value; return render(); }
+    if (d.imgTopic) {
+      imgTopic(s, d.imgTopic).text = el.value; Store.saveSoon();
+      const b = document.querySelector(`[data-img-prompt="${d.imgTopic}"]`); // ohne KI erst mit Motiv möglich
+      if (b && !AI.available()) b.disabled = !el.value.trim() && imgTopic(s, d.imgTopic).scene == null;
+      return;
+    }
     if (d.diary !== undefined) { s.diary.text = el.value; s.diary.updatedAt = Date.now(); return Store.saveSoon(); }
     if (d.e) { s.expedition[d.e] = el.value; return Store.saveSoon(); }
     if (d.find !== undefined) { s.expedition.finds[d.find][d.k] = el.value; return Store.saveSoon(); }
@@ -1004,6 +1145,10 @@
   });
 
   document.addEventListener('change', ev => {
+    if (ev.target.dataset && ev.target.dataset.detPick !== undefined && ev.target.value) {
+      const i = +ev.target.dataset.detPick, fx = $('#det-fix-' + i);
+      return linkDetected(Store.session(state.sessionId), i, ev.target.value, fx ? fx.checked : true);
+    }
     if (ev.target.dataset && ev.target.dataset.imgUp && ev.target.files[0]) {
       const s = Store.session(state.sessionId);
       setOwnImage(s, ev.target.dataset.imgUp, ev.target.files[0]).catch(e => toast('Bild konnte nicht gelesen werden: ' + e.message, 'error'));

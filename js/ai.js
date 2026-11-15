@@ -236,12 +236,13 @@ const AI = (() => {
     return list;
   }
 
-  async function generateImage(prompt, refBlob) {
+  // refs: [{ name, blob }] – Porträts als Vorlage, damit die Figuren wie hinterlegt aussehen
+  async function generateImage(prompt, refs = []) {
     const s = S();
     if (s.provider !== 'gemini' || !s.geminiKey) throw new Error('Bilder erstellen geht aktuell nur mit Gemini (Einstellungen → KI-Schreibhilfe).');
     const kp = keyProblem('gemini', s.geminiKey); if (kp) throw new Error(kp);
-    const parts = [{ text: prompt + (refBlob ? '\nUse the attached portrait as the reference for the main character\'s face, hair and outfit.' : '') }];
-    if (refBlob) parts.push({ inline_data: { mime_type: refBlob.type || 'image/jpeg', data: await Images.toBase64(refBlob) } });
+    const parts = [{ text: prompt + (refs.length ? `\nReference portraits are attached in this order: ${refs.map(r => r.name).join(', ')}. Match each character's face, hair, colors and outfit to their portrait.` : '') }];
+    for (const r of refs) parts.push({ inline_data: { mime_type: r.blob.type || 'image/jpeg', data: await Images.toBase64(r.blob) } });
     const body = { contents: [{ role: 'user', parts }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } };
     let j;
     try { j = await race(await imageModels(false), body, false); }
