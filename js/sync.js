@@ -201,6 +201,8 @@ const Sync = (() => {
   function soon() { clearTimeout(timer); timer = setTimeout(quiet, 2500); }
 
   function init() {
+    // Geräte, die schon vor der Kontowechsel-Prüfung angemeldet waren: aktuelles Konto als „zuletzt angemeldet“ merken
+    if (cfg.session && !cfg.lastUserId) { cfg.lastUserId = cfg.session.user_id; saveCfg(); }
     setStatus(!configured() ? 'off' : loggedIn() ? 'ok' : 'login');
     Store.onChange(() => { if (configured() && loggedIn()) soon(); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) quiet(); else if (timer) { clearTimeout(timer); quiet(); } });

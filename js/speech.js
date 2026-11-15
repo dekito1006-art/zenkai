@@ -68,7 +68,8 @@ const Speech = (() => {
 
   function toggle(btn, textarea, onError) {
     if (active) { const same = active.btn === btn; active.stop(); if (same) return; }
-    if (Store.data.settings.speechMode === 'ai') startAI(btn, textarea, onError);
+    // KI-Transkription nur mit eigener KI – sonst automatisch das kostenlose Live-Diktat
+    if (Store.data.settings.speechMode === 'ai' && AI.available()) startAI(btn, textarea, onError);
     else startBrowser(btn, textarea, onError);
   }
 

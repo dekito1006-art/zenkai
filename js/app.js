@@ -122,11 +122,25 @@
   /* ---------- Sessions ---------- */
   function viewSessions() {
     const list = [...D().sessions].sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.createdAt - a.createdAt);
-    const aiHint = !AI.available() ? `<div class="note">💡 Für automatisches Schreiben in den <a href="#" data-go="settings">Einstellungen</a> ChatGPT oder Gemini verbinden.</div>` : '';
+    const ai = AI.available();
+    let hideHint = false; try { hideHint = localStorage.getItem('zenkai.hideAiHint') === '1'; } catch (e) { }
+    // Neue Nutzer: kurzer Einstieg in 3 Schritten
+    const welcome = !D().myChars.length ? `<div class="panel welcome">
+        <h3>👋 Willkommen bei Zenkai</h3>
+        <p class="muted small">Nach jeder Session erzählst du kurz, was passiert ist – Zenkai macht daraus dein Tagebuch und (für Divisionen wie die Archäologie) den Bericht.</p>
+        <ol class="steps">
+          <li><a href="#" data-act="add-mychar">Deinen Charakter anlegen</a> – Name, Rang, Dorf, Division, Alter</li>
+          <li><em>Optional:</em> <a href="#" data-go="settings">eigene KI verbinden</a> (kostenloser Gemini-Schlüssel) – dann schreibt Zenkai die Berichte für dich. Ohne KI schreibst du selbst, mit Vorlagen.</li>
+          <li>„＋ Neue Session“ – erzählen oder tippen, fertig</li>
+        </ol>
+        <button class="btn primary" data-act="add-mychar">＋ Charakter anlegen</button>
+      </div>` : '';
+    const aiHint = !ai && D().myChars.length && !hideHint ? `<div class="note row-between">
+        <span>💡 Optional: Mit deiner <a href="#" data-go="settings">eigenen KI</a> schreibt Zenkai Tagebuch und Bericht automatisch.</span>
+        <button class="btn ghost small" data-act="hide-ai-hint">Ausblenden</button></div>` : '';
     app.innerHTML = `
       <div class="head"><h1>Sessions</h1><button class="btn primary" data-act="new-session">＋ Neue Session</button></div>
-      ${aiHint}
-      ${!D().myChars.length ? `<div class="empty">Lege zuerst unter <a href="#" data-go="mychars">Meine Charaktere</a> deinen gespielten Charakter an.</div>` : ''}
+      ${welcome}${aiHint}
       ${list.length ? `<div class="cards">${list.map(s => {
         const c = Store.myChar(s.myCharId); const exp = needsExpedition(s);
         return `<button class="card" data-open="${s.id}">
@@ -194,12 +208,15 @@
         </div>`).join('')}
       </div>` : ''}
       <div class="cta">
-        ${!ai ? `<div class="note">Für Rückfragen und automatisches Schreiben in den <a href="#" data-go="settings">Einstellungen</a> ChatGPT oder Gemini verbinden.</div>` : ''}
-        ${qa.length
+        ${!ai
+        ? `<button class="btn primary big" data-tab="diary">✍️ Weiter: Tagebuch schreiben</button>
+           ${exp ? '<button class="btn ghost" data-tab="expedition">📜 Expeditionsbericht ausfüllen</button>' : ''}
+           <p class="muted small">Du arbeitest ohne KI – deine Notizen bleiben hier als Gedächtnisstütze stehen. Optional kann Zenkai die Berichte mit deiner eigenen, kostenlosen KI schreiben: <a href="#" data-go="settings">Einstellungen → KI-Schreibhilfe</a>.</p>`
+        : qa.length
         ? `<button class="btn primary big" data-act="gen-all">✨ ${exp ? 'Tagebuch + Expeditionsbericht' : 'Tagebuch'} schreiben</button>
            <button class="btn ghost" data-act="ask">Nochmal auf Lücken prüfen</button>`
-        : `<button class="btn primary big" data-act="ask" ${ai ? '' : 'disabled'}>✨ Weiter – KI prüft auf Lücken</button>
-           <button class="btn ghost" data-act="gen-all" ${ai ? '' : 'disabled'}>Ohne Rückfragen direkt schreiben</button>`}
+        : `<button class="btn primary big" data-act="ask">✨ Weiter – KI prüft auf Lücken</button>
+           <button class="btn ghost" data-act="gen-all">Ohne Rückfragen direkt schreiben</button>`}
       </div>
       <div class="panel">
         <div class="row-between"><h3>Beteiligte Personen</h3>
@@ -281,19 +298,29 @@
 
   function tabDiary(s, el) {
     const me = Store.myChar(s.myCharId);
+    const ai = AI.available();
     el.innerHTML = `
       <div class="panel diary">
         <div class="row-between"><h3>📖 Tagebuch von ${esc(me ? me.name : '')}</h3>
-          <div class="btns">${micBtn('diary')}<button class="btn small" data-act="gen-diary">✨ ${s.diary.text ? 'Neu schreiben' : 'Schreiben lassen'}</button></div></div>
+          <div class="btns">${micBtn('diary')}${ai ? `<button class="btn small" data-act="gen-diary">✨ ${s.diary.text ? 'Neu schreiben' : 'Schreiben lassen'}</button>` : ''}</div></div>
         <p class="muted small">Ich-Form, aus Sicht deines Charakters: Was hast du erlebt, gefühlt, gelernt?</p>
+        ${!ai && !s.diary.text ? `<div class="btns"><button class="btn ghost small" data-act="diary-template">📝 Vorlage einfügen (Erlebt / Gefühlt / Gelernt)</button>${s.notes.trim() ? '<button class="btn ghost small" data-act="notes-to-diary">📋 Meine Notizen übernehmen</button>' : ''}</div>` : ''}
         <textarea id="diary" class="paper" data-diary rows="14" placeholder="Liebes Tagebuch, …">${esc(s.diary.text)}</textarea>
         <div class="muted small right">${words(s.diary.text)} Wörter</div>
-        <div class="refine">
+        ${ai ? `<div class="refine">
           <div class="chips">${['Kürzer', 'Emotionaler', 'Mehr Gelerntes betonen', 'Mehr im Ton meines Charakters', 'Rechtschreibung korrigieren'].map(x => `<button class="chip" data-refine="${esc(x)}">${esc(x)}</button>`).join('')}</div>
           <div class="row"><input id="refine-own" placeholder="Eigene Anweisung, z. B. „Erwähne meine Angst vor Wasser“"><button class="btn small" data-act="refine-own">Überarbeiten</button></div>
-        </div>
+        </div>` : ''}
         ${imgSection(s, 'diary')}
       </div>`;
+  }
+
+  // Ohne KI: Gerüst zum Selbstschreiben, passend zum eingestellten Format
+  function diaryTemplate(s) {
+    const date = s.ingameDate ? s.ingameDate + '\n\n' : '';
+    return D().settings.diaryFormat === 'fliesstext'
+      ? `${date}Heute …\n\nDabei habe ich mich … gefühlt, weil …\n\nGelernt habe ich, dass …`
+      : `${date}Erlebt\n…\n\nGefühlt\n…\n\nGelernt\n…`;
   }
 
   /* ---------- KI-Bild zum Tagebuch / Bericht (je eins) ---------- */
@@ -307,15 +334,15 @@
         <div class="btns"><button class="btn small" data-img-share="${kind}">Teilen</button><button class="btn ghost small" data-img-dl="${kind}">Speichern</button><button class="btn ghost small danger" data-img-del="${kind}">Entfernen</button></div>` : ''}
       <div class="chips">${Object.entries(Reports.IMG_STYLES).map(([k, v]) => `<button class="chip ${style === k ? 'on' : ''}" data-img-style="${kind}:${k}">${v.label}</button>`).join('')}</div>
       <div class="btns">
-        <button class="btn small" data-img-gen="${kind}" ${hasText ? '' : 'disabled'}>🎨 ${h.imageId ? 'Neues Bild erstellen' : 'Bild erstellen lassen'}</button>
-        <button class="btn ghost small" data-img-prompt="${kind}" ${hasText ? '' : 'disabled'}>📋 Für ChatGPT</button>
-        <label class="btn ghost small">📤 Eigenes Bild<input type="file" accept="image/*" data-img-up="${kind}" hidden></label>
+        ${AI.available() ? `<button class="btn small" data-img-gen="${kind}" ${hasText ? '' : 'disabled'}>🎨 ${h.imageId ? 'Neues Bild erstellen' : 'Bild erstellen lassen'}</button>
+        <button class="btn ghost small" data-img-prompt="${kind}" ${hasText ? '' : 'disabled'}>📋 Für ChatGPT</button>` : ''}
+        <label class="btn ${AI.available() ? 'ghost' : ''} small">📤 ${h.imageId ? 'Anderes Bild' : 'Eigenes Bild hochladen'}<input type="file" accept="image/*" data-img-up="${kind}" hidden></label>
       </div>
       ${h.imagePrompt && state.showPrompt === kind ? `<div class="note prompt-box">
         <p><strong>So geht's ohne Kosten:</strong> Die Beschreibung ist kopiert (inkl. „Erstelle ein Bild:“). In der <strong>ChatGPT-App</strong> einfügen und absenden, das Bild speichern und hier über <strong>📤 Eigenes Bild</strong> hochladen.</p>
         <pre class="out">${esc(h.imagePrompt)}</pre>
         <div class="btns"><button class="btn small" data-img-copy="${kind}">Nochmal kopieren</button><a class="btn ghost small" href="https://chatgpt.com/" target="_blank" rel="noopener">ChatGPT öffnen</a></div></div>` : ''}
-      <p class="muted small">${hasText ? '„Bild erstellen lassen“ nutzt Gemini – die Bildmodelle sind dort nur mit hinterlegter Abrechnung verfügbar (ca. 4 Cent/Bild). Kostenlos: „Für ChatGPT“ (mit deinem Abo) oder ein eigenes Bild hochladen.' : 'Erst den Text schreiben (lassen), dann das Bild.'}</p>
+      <p class="muted small">${!AI.available() ? 'Z. B. eine eigene Zeichnung, ein Screenshot aus dem Spiel oder ein Bild aus einer Bild-KI.' : hasText ? '„Bild erstellen lassen“ nutzt Gemini – die Bildmodelle sind dort nur mit hinterlegter Abrechnung verfügbar (ca. 4 Cent/Bild). Kostenlos: „Für ChatGPT“ (mit deinem Abo) oder ein eigenes Bild hochladen.' : 'Erst den Text schreiben (lassen), dann das Bild.'}</p>
     </div>`;
   }
 
@@ -381,7 +408,7 @@
     el.innerHTML = `
       <div class="panel report">
         <div class="row-between"><h3>📜 Expeditionsbericht · Archäologie-Division</h3>
-          <button class="btn small" data-act="gen-exp">✨ Aus Erzählung ausfüllen</button></div>
+          ${AI.available() ? '<button class="btn small" data-act="gen-exp">✨ Aus Erzählung ausfüllen</button>' : ''}</div>
         <div class="grid2">${Reports.EXP_HEAD.map(field).join('')}</div>
         <div class="row-between"><span></span><button class="btn ghost small" data-act="fill-team">Teilnehmer aus Session übernehmen</button></div>
         ${S.slice(0, 4).map(area).join('')}
@@ -656,6 +683,7 @@
     const d = t.dataset;
     const s = Store.session(state.sessionId);
 
+    if (t.tagName === 'A' && t.getAttribute('href') === '#') ev.preventDefault();
     if (d.gate) { ev.preventDefault(); state.gate = d.gate; state.gateMsg = ''; return render(); }
     if (gated()) return; // auf der Anmeldeseite sind keine anderen Aktionen möglich
     if (d.go) { ev.preventDefault(); return go(d.go); }
@@ -710,6 +738,9 @@
         return;
       }
       case 'add-mychar': return personForm({ _mine: true }, 'Neuer Charakter', v => { D().myChars.push({ id: Store.uid(), ...v }); Store.save(); });
+      case 'hide-ai-hint': try { localStorage.setItem('zenkai.hideAiHint', '1'); } catch (e) { } return render();
+      case 'diary-template': s.diary.text = diaryTemplate(s); Store.save(); render(); { const ta = $('#diary'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.indexOf('…'), ta.value.indexOf('…') + 1); } } return;
+      case 'notes-to-diary': s.diary.text = (s.ingameDate ? s.ingameDate + '\n\n' : '') + s.notes.trim(); Store.save(); render(); return toast('Notizen übernommen – jetzt in Ich-Form umschreiben');
       case 'ask': return busy(t, () => askQuestions(s));
       case 'gen-all': return busy(t, () => generateAll(s));
       case 'gen-diary': return busy(t, async () => {

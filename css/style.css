@@ -21,6 +21,11 @@ h1 { font-size: 1.5rem; margin: 0; } h2 { margin: 0 0 12px; } h3 { margin: 0; fo
 .sync-badge:empty { display: none; }
 .sync-badge.ok { color: var(--ok); } .sync-badge.error, .sync-badge.login { color: #ffb4b6; border-color: #6b2a2d; }
 .sync-badge.syncing::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .7s linear infinite; }
+.welcome { border-color: #5a3f1d; display: grid; gap: 8px; }
+.welcome .steps { margin: 0; }
+.welcome .btn { justify-self: start; }
+.note.row-between { margin-bottom: 14px; flex-wrap: nowrap; }
+
 /* Anmeldeseite */
 body.gated .topbar { display: none; }
 body.gated main { padding-bottom: 24px; }
