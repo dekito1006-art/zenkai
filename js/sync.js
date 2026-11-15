@@ -49,6 +49,7 @@ const Sync = (() => {
     };
     if (/relation .*zenkai_data.* does not exist|Could not find the table/i.test(m)) return 'Tabelle „zenkai_data“ fehlt – bitte supabase.sql im Supabase-SQL-Editor ausführen.';
     if (/Password should be at least/i.test(m)) return 'Das Passwort ist zu kurz (mindestens 6 Zeichen).';
+    if (/signups? not allowed|signup.*disabled/i.test(m)) return 'Neue Konten sind abgeschaltet – bitte mit deinem bestehenden Konto anmelden.';
     return map[m] || m;
   }
 
