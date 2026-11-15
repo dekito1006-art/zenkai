@@ -63,10 +63,20 @@ const AI = (() => {
   // Modelle, die zu langsam waren (im Gratis-Tarif oft die allerneuesten), für 6 Stunden nach hinten stellen
   const SLOW = 'zenkai.gslow';
   const slowMap = () => { try { return JSON.parse(localStorage.getItem(SLOW)) || {}; } catch (e) { return {}; } };
-  const markSlow = m => { const x = slowMap(); x[m] = Date.now() + 6 * 3600e3; localStorage.setItem(SLOW, JSON.stringify(x)); };
+  const markSlow = (m, hours = 6) => { const x = slowMap(); x[m] = Date.now() + hours * 3600e3; localStorage.setItem(SLOW, JSON.stringify(x)); };
+  // Modelle ohne freies Kontingent (sofort 429 "exceeded your current quota") für 24 h ganz nach hinten
+  const isBlocked = m => { const x = slowMap(); return x[m + '#blocked'] > Date.now(); };
+  // Gratis-Tarif: 20 Anfragen pro Tag und Modell. Google nennt in der Fehlermeldung, wann es wieder geht ("retry in 13h5m").
+  const retryMs = msg => {
+    const m = /retry in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?/i.exec(msg || '');
+    const ms = m ? ((+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0)) * 1000 : 0;
+    return ms > 0 ? Math.min(ms, 24 * 3600e3) : (/per ?day/i.test(msg || '') ? 24 * 3600e3 : 60e3);
+  };
+  const markBlocked = (m, ms = 24 * 3600e3) => { const x = slowMap(); x[m + '#blocked'] = Date.now() + ms; localStorage.setItem(SLOW, JSON.stringify(x)); };
   // Reihenfolge: schnelle Flash-Modelle → höchstens ein „langsames“ Flash-Modell (Qualität vor Tempo) → Lite-Modelle → Rest
-  const bySpeed = list => {
-    const x = slowMap(), now = Date.now(), slow = m => x[m] > now, lite = m => /-lite$/.test(m);
+  const bySpeed = all => {
+    const list = all.filter(m => !isBlocked(m)).concat(all.filter(isBlocked)); // gesperrte ganz ans Ende
+    const x = slowMap(), now = Date.now(), slow = m => x[m] > now || isBlocked(m), lite = m => /-lite$/.test(m);
     const fastFull = list.filter(m => !lite(m) && !slow(m)), slowFull = list.filter(m => !lite(m) && slow(m));
     const lites = list.filter(lite).sort((a, b) => slow(a) - slow(b));
     return [...fastFull, ...slowFull.slice(0, fastFull.length ? 0 : 1), ...lites, ...slowFull.slice(fastFull.length ? 0 : 1)];
@@ -108,7 +118,8 @@ const AI = (() => {
           const busy = [429, 500, 503].includes(res.status) || /high demand|overloaded|unavailable|try again later/i.test(err.message);
           const gone = res.status === 404 || /no longer available|not found|not supported/i.test(err.message);
           if (!busy && !gone) return finish(reject, err);
-          if (busy) markSlow(model); else refresh = true;
+          if (res.status === 429 && /quota|limit:/i.test(err.message)) markBlocked(model, retryMs(err.message));
+          else if (busy) markSlow(model); else refresh = true;
           next();
         }).catch(e => {
           if (done || e.name === 'AbortError') return;
@@ -259,11 +270,41 @@ const AI = (() => {
     return Images.fromBase64(img.data, img.mimeType || img.mime_type);
   }
 
+  /* Aussehen einer Figur aus einem Bild/Screenshot beschreiben (für konsistente KI-Bilder) */
+  // Bewusst nur Merkmale zum Wiedererkennen (Frisur, Kleidung, Ausrüstung) – keine Körper-/Altersangaben,
+  // sonst blockt der Sicherheitsfilter bei jungen Figuren (PROHIBITED_CONTENT)
+  const LOOKS_PROMPT = 'Dies ist eine Anime-Figur aus einem Naruto-Rollenspiel. Beschreibe ihre wiedererkennbaren Design-Merkmale für einen Zeichner, ' +
+    'als kompakte Liste in einer Zeile, durch Semikolons getrennt (40–80 Wörter): Haarfarbe, Haarlänge und Frisur; Augenfarbe; Besonderheiten im Gesicht (Narben, Markierungen, Bemalung); ' +
+    'Kleidung mit Farben und Schnitt (Weste, Oberteil, Hose, Schuhe); Stirnband/Dorfsymbol und wo es getragen wird; Waffen, Schmuck und Accessoires. ' +
+    'Nur was sichtbar ist. Keine Namen. Antworte nur mit der Liste.';
+
+  async function describeLooks(blob) {
+    const s = S();
+    if (!available()) throw new Error('Für die automatische Beschreibung bitte zuerst eine KI verbinden.');
+    const b64 = await Images.toBase64(blob), mime = blob.type || 'image/jpeg';
+    if (s.provider === 'openai') {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + s.openaiKey },
+        body: JSON.stringify({ model: s.openaiModel, messages: [{ role: 'user', content: [{ type: 'text', text: LOOKS_PROMPT }, { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } }] }] }),
+      });
+      if (!res.ok) throw await readError(res);
+      return (await res.json()).choices[0].message.content.trim();
+    }
+    const j = await gemini({ contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: LOOKS_PROMPT }] }] }, 25000);
+    const c = j.candidates && j.candidates[0];
+    const text = c && c.content && (c.content.parts || []).map(p => p.text || '').join('').replace(/\*\*/g, '').trim();
+    if (!text) {
+      const why = (c && c.finishReason) || (j.promptFeedback && j.promptFeedback.blockReason) || 'keine Antwort';
+      throw new Error(`Die KI konnte das Bild nicht beschreiben (${why}). Bitte nochmal versuchen oder das Aussehen selbst eintragen.`);
+    }
+    return text;
+  }
+
   async function test() {
     const r = await complete({ system: 'Antworte knapp.', user: 'Sag "Verbindung steht!" auf Deutsch.' });
     const s = S();
     return r + (s.provider === 'gemini' ? ` (Modell: ${lastModel})` : '');
   }
 
-  return { available, keyProblem, generateImage, complete, completeJSON, transcribe, test, get lastModel() { return lastModel; } };
+  return { available, keyProblem, generateImage, describeLooks, complete, completeJSON, transcribe, test, get lastModel() { return lastModel; } };
 })();

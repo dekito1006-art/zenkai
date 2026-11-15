@@ -6,7 +6,7 @@
   const L = () => D().settings.lists;
   const app = $('#app');
 
-  const state = { view: 'sessions', sessionId: null, tab: 'notes', q: '', fVillage: '', fRank: '', fDivision: '', detected: [] };
+  const state = { view: 'book', sessionId: null, tab: 'notes', q: '', fVillage: '', fRank: '', fDivision: '', detected: [] };
 
   /* ---------- Helfer ---------- */
   function toast(msg, type = '') {
@@ -123,7 +123,7 @@
     if (gated()) { document.body.classList.add('gated'); viewGate(); return; }
     document.body.classList.remove('gated');
     document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === state.view || (state.view === 'session' && b.dataset.view === 'sessions')));
-    ({ sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
+    ({ book: viewBook, sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
     Images.hydrate(app);
   }
 
@@ -674,11 +674,92 @@
     const block = (id, title, text) => `<div class="panel"><div class="row-between"><h3>${title}</h3>
       <div class="btns"><button class="btn small" data-copy="${id}">📋 Kopieren</button><button class="btn ghost small" data-share="${id}">Teilen</button><button class="btn ghost small" data-dl="${id}">.txt</button></div></div>
       <pre class="out" id="out-${id}">${esc(text)}</pre></div>`;
-    el.innerHTML = block('diary', '📖 Tagebuch', Reports.diaryText(s)) +
+    el.innerHTML = `<div class="cta"><button class="btn primary" data-act="session-pdf">📚 Diese Session als PDF / im Buch ansehen</button></div>` +
+      block('diary', '📖 Tagebuch', Reports.diaryText(s)) +
       opsOf(s).filter(Reports.opHasContent).map(op => block(op.id, `📜 ${esc(Reports.opType(op).report)}${op.title ? ' – ' + esc(op.title) : ''}`, Reports.opText(s, op))).join('');
   }
 
-  /* ---------- Verzeichnis ---------- */
+  /* ---------- Buch: alle Einträge als Seiten, als PDF speicherbar ---------- */
+  const paras = t => esc((t || '').trim()).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+  const fig = (id, cap) => id && state.bookImages !== false ? `<figure class="b-fig"><img data-img="${esc(id)}" alt="">${cap ? `<figcaption>${esc(cap)}</figcaption>` : ''}</figure>` : '';
+
+  function bookSessions() {
+    let list = D().sessions.filter(s => (s.diary && s.diary.text) || opsOf(s).some(Reports.opHasContent));
+    if (state.bookOnly) list = list.filter(s => s.id === state.bookOnly);
+    if (state.bookChar) list = list.filter(s => s.myCharId === state.bookChar);
+    return list.sort((a, b) => ((a.date || '').localeCompare(b.date || '') || (a.createdAt || 0) - (b.createdAt || 0)) * (state.bookOrder === 'desc' ? -1 : 1));
+  }
+
+  function bookDiaryPage(s) {
+    const me = Store.myChar(s.myCharId);
+    const secs = diarySections(s.diary.text);
+    const meta = [s.ingameDate, fmtDate(s.date), me && [me.name, Reports.rankOf(s), Reports.ageOf(s) && Reports.ageOf(s) + ' Jahre'].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+    return `<section class="page" id="b-${s.id}">
+      <header class="b-head"><div class="b-kicker">📖 Tagebuch</div><h2>${esc(s.title || 'Ohne Titel')}</h2><div class="b-meta">${esc(meta)}</div></header>
+      ${fig(s.diary.imageId)}
+      ${secs.map(x => `${x.title ? `<h3>${esc(x.title)}</h3>` : ''}${paras(x.body)}`).join('')}
+    </section>`;
+  }
+
+  function bookOpPage(s, op) {
+    const t = Reports.opType(op);
+    const head = t.head.filter(f => op[f.key]).map(f => `<tr><th>${esc(f.label)}</th><td>${esc(op[f.key])}</td></tr>`).join('');
+    const finds = (op.finds || []).filter(x => Reports.FIND_COLS.some(c => x[c.key]));
+    const findsHtml = t.finds ? `<h3>Funde & Artefakte</h3>${finds.length ? `<table class="b-table"><tr>${Reports.FIND_COLS.map(c => `<th>${c.label}</th>`).join('')}</tr>${finds.map(x => `<tr>${Reports.FIND_COLS.map(c => `<td>${esc(x[c.key] || '')}</td>`).join('')}</tr>`).join('')}</table>` : '<p>Keine Funde.</p>'}` : '';
+    const body = t.sections.map(f => {
+      let h = '';
+      if (f.key === 'bewertung' && (op.ergebnis || op.bewertung)) h = `<h3>${esc(f.label)}</h3>${op.ergebnis ? `<p><strong>Ergebnis:</strong> ${esc(op.ergebnis)}</p>` : ''}${paras(op.bewertung)}`;
+      else if ((op[f.key] || '').trim()) h = `<h3>${esc(f.label)}</h3>${paras(op[f.key])}`;
+      return h + (t.finds && f.key === t.findsAfter ? findsHtml : '');
+    }).join('');
+    const me = Store.myChar(s.myCharId);
+    return `<section class="page report-page">
+      <header class="b-head"><div class="b-kicker">${t.icon} ${esc(t.report)}</div><h2>${esc(op.title || s.title || t.label)}</h2><div class="b-meta">${esc([s.ingameDate, fmtDate(s.date)].filter(Boolean).join(' · '))}</div></header>
+      ${head ? `<table class="b-table b-kv">${head}<tr><th>Verfasser</th><td>${esc(me ? [me.name, Reports.rankOf(s)].filter(Boolean).join(', ') : '')}</td></tr></table>` : ''}
+      ${fig(op.imageId)}
+      ${body}
+      <p class="b-sign">Gez. ${esc(me ? me.name : '')}</p>
+    </section>`;
+  }
+
+  function viewBook() {
+    const list = bookSessions();
+    const chars = D().myChars;
+    const showD = state.bookDiary !== false, showR = state.bookReports !== false;
+    const only = state.bookOnly && Store.session(state.bookOnly);
+    const toc = list.map(s => {
+      const ops = opsOf(s).filter(Reports.opHasContent);
+      return `<li><a href="#b-${s.id}">${esc(s.title || 'Ohne Titel')}</a> <span>${esc([s.ingameDate, fmtDate(s.date)].filter(Boolean).join(' · '))}</span>
+        ${showR && ops.length ? `<div class="b-toc-ops">${ops.map(o => esc(Reports.opType(o).icon + ' ' + Reports.opType(o).report + (o.title ? ': ' + o.title : ''))).join(' · ')}</div>` : ''}</li>`;
+    }).join('');
+    const me = chars.find(c => c.id === state.bookChar) || (chars.length === 1 ? chars[0] : null);
+    app.innerHTML = `
+      <div class="book-tools no-print">
+        <div class="head"><h1>📚 Buch</h1><button class="btn primary" data-act="book-print" ${list.length ? '' : 'disabled'}>🖨 Als PDF speichern</button></div>
+        ${only ? `<div class="note row-between"><span>Nur: <strong>${esc(only.title || 'Ohne Titel')}</strong></span><button class="btn ghost small" data-act="book-all">Alle Einträge zeigen</button></div>` : ''}
+        <div class="filters book-filters">
+          ${chars.length > 1 ? `<select data-f="bookChar"><option value="">Alle Charaktere</option>${chars.map(c => `<option value="${c.id}" ${state.bookChar === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
+          <select data-f="bookOrder"><option value="asc" ${state.bookOrder !== 'desc' ? 'selected' : ''}>Älteste zuerst</option><option value="desc" ${state.bookOrder === 'desc' ? 'selected' : ''}>Neueste zuerst</option></select>
+          <div class="chips">
+            <button class="chip ${showD ? 'on' : ''}" data-book-toggle="bookDiary">📖 Tagebücher</button>
+            <button class="chip ${showR ? 'on' : ''}" data-book-toggle="bookReports">📜 Berichte</button>
+            <button class="chip ${state.bookImages !== false ? 'on' : ''}" data-book-toggle="bookImages">🖼 Bilder</button>
+          </div>
+        </div>
+        <p class="muted small">Tipp: „Als PDF speichern“ öffnet den Druckdialog – dort als Drucker „Als PDF speichern“ wählen.</p>
+      </div>
+      ${!list.length ? `<div class="empty">Noch keine geschriebenen Einträge. Sobald ein Tagebuch oder Bericht existiert, erscheint er hier als Seite. <a href="#" data-go="sessions">Zu den Sessions</a></div>` : `
+      <div class="book">
+        <section class="page cover">
+          <div class="b-cover-title">Zenkai</div>
+          <div class="b-cover-sub">${esc(me ? me.name : chars.map(c => c.name).join(' · ') || 'Tagebuch & Berichte')}</div>
+          <div class="b-meta">${list.length} ${list.length === 1 ? 'Eintrag' : 'Einträge'} · ${esc([list[0].ingameDate || fmtDate(list[0].date), list.length > 1 ? (list[list.length - 1].ingameDate || fmtDate(list[list.length - 1].date)) : ''].filter(Boolean).join(' – '))}</div>
+          <h3>Inhalt</h3><ol class="b-toc">${toc}</ol>
+        </section>
+        ${list.map(s => (showD && s.diary && s.diary.text ? bookDiaryPage(s) : `<a id="b-${s.id}"></a>`) + (showR ? opsOf(s).filter(Reports.opHasContent).map(op => bookOpPage(s, op)).join('') : '')).join('')}
+      </div>`}`;
+  }
+
   /* ---------- Verzeichnis ---------- */
   const BULK_FIELDS = [['village', 'Dorf'], ['rank', 'Rang'], ['division', 'Division'], ['clan', 'Clan'], ['profession', 'Beruf'], ['relation', 'Beziehung']];
   const RELATIONS = ['Verbündet', 'Freund', 'Neutral', 'Rivale', 'Feind'];
@@ -811,7 +892,10 @@
           <label>Clan<input name="clan" value="${esc(p.clan)}"></label>
           <label>Alter<input name="age" inputmode="numeric" value="${esc(p.age)}" placeholder="z. B. 13"></label>
         </div>
-        <label>Aussehen <span class="muted small">(für KI-Bilder)</span><textarea name="looks" rows="2" placeholder="z. B. lange schwarze Haare, helle Augen, grüne Chunin-Weste, Narbe an der Wange">${esc(p.looks)}</textarea></label>
+        <div class="looks-row">
+          <label>Aussehen <span class="muted small">(für KI-Bilder – wird mit Porträt automatisch beschrieben)</span><textarea name="looks" rows="3" placeholder="z. B. lange schwarze Haare, helle Augen, grüne Chunin-Weste, Narbe an der Wange">${esc(p.looks)}</textarea></label>
+          ${AI.available() ? `<button type="button" class="btn ghost small ${img.id ? '' : 'hidden'}" id="looks-ai">✨ Aussehen aus Bild beschreiben</button>` : ''}
+        </div>
         ${p._mine ? `<label>Persönlichkeit & Sprechweise <span class="muted small">(prägt den Ton im Tagebuch)</span><textarea name="voice" rows="3" placeholder="z. B. neugierig, etwas schüchtern, spricht förmlich, liebt alte Schriftrollen">${esc(p.voice)}</textarea></label>`
         : `<label>Beziehung<select name="relation">${opts(['Verbündet', 'Freund', 'Neutral', 'Rivale', 'Feind'], p.relation, '–')}</select></label>
            <label>Notizen<textarea name="notes" rows="3" placeholder="Jutsu, Eigenheiten, was ihr erlebt habt…">${esc(p.notes)}</textarea></label>`}
@@ -821,12 +905,30 @@
       </form>`);
     const showPic = () => { $('#pic-prev').innerHTML = avatar(img.id, $('#pform [name=firstName]').value || $('#pform [name=lastName]').value, 'big'); $('#pic-del').classList.toggle('hidden', !img.id); Images.hydrate($('#pic-prev')); };
     Images.hydrate($('#pic-prev'));
+    // KI beschreibt das Aussehen aus dem Bild (für die Original-Datei, nicht den Zuschnitt – mehr Details wie Kleidung)
+    let srcBlob = null;
+    const describe = async (btn) => {
+      const blob = srcBlob || (img.id && await Images.blobOf(img.id));
+      if (!blob) return;
+      const ta = $('#pform [name=looks]');
+      if (ta.value.trim() && !confirm('Vorhandene Aussehen-Beschreibung durch die neue aus dem Bild ersetzen?')) return;
+      const lbl = btn && btn.innerHTML; if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> KI schaut sich das Bild an…'; }
+      try { ta.value = await AI.describeLooks(blob); toast('Aussehen beschrieben – kurz prüfen ✓'); }
+      catch (e) { toast(e.message, 'error'); }
+      finally { if (btn && document.body.contains(btn)) { btn.disabled = false; btn.innerHTML = lbl; } }
+    };
     $('#pic-in').onchange = async ev => {
       const f = ev.target.files[0]; if (!f) return;
-      try { const blob = await Images.resize(f, 512, true); img.id = await Images.save(blob); img.fresh.push(img.id); showPic(); }
+      try {
+        srcBlob = await Images.resize(f, 1280, false); // ganzes Bild für die Beschreibung
+        const blob = await Images.resize(f, 512, true); img.id = await Images.save(blob); img.fresh.push(img.id); showPic();
+        const b = $('#looks-ai'); if (b) b.classList.remove('hidden');
+        if (AI.available() && !$('#pform [name=looks]').value.trim()) describe(b); // leeres Feld → automatisch ausfüllen
+      }
       catch (e) { toast('Bild konnte nicht gelesen werden: ' + e.message, 'error'); }
     };
-    $('#pic-del').onclick = () => { img.id = ''; showPic(); };
+    if ($('#looks-ai')) $('#looks-ai').onclick = ev => describe(ev.currentTarget);
+    $('#pic-del').onclick = () => { img.id = ''; srcBlob = null; showPic(); const b = $('#looks-ai'); if (b) b.classList.add('hidden'); };
     $('#pform').onsubmit = ev => {
       ev.preventDefault();
       const v = Object.fromEntries(new FormData(ev.target));
@@ -1051,6 +1153,7 @@
       return toast(d.confChar !== undefined ? 'Session und Charakter angepasst' : 'Für diese Session übernommen');
     }
     if (d.confSkip !== undefined) { s.conflicts.splice(d.confSkip, 1); Store.save(); return render(); }
+    if (d.bookToggle) { state[d.bookToggle] = state[d.bookToggle] === false; return render(); }
     if (d.genDiary) { s.genDiary = !wantDiary(s); Store.save(); return render(); }
     if (d.opWant) { const op = opById(s, d.opWant); if (op) { op.wanted = !op.wanted; Store.save(); } return render(); }
     if (d.opDel) {
@@ -1135,6 +1238,13 @@
       }
       case 'add-mychar': return personForm({ _mine: true }, 'Neuer Charakter', v => { D().myChars.push({ id: Store.uid(), ...v }); Store.save(); });
       case 'diary-view': state.diaryWhole = !state.diaryWhole; return render();
+      case 'book-print': return busy(t, async () => {
+        await Images.hydrate(app); // alle Bilder geladen, bevor gedruckt wird
+        await new Promise(r => setTimeout(r, 300));
+        window.print();
+      });
+      case 'book-all': state.bookOnly = null; return render();
+      case 'session-pdf': state.bookOnly = s.id; return go('book');
       case 'fold-all': {
         const ds = [...document.querySelectorAll(`#${d.scope} details.sub`)];
         const open = !ds.every(x => x.open);
