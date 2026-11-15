@@ -53,7 +53,67 @@
   /* ---------- Navigation ---------- */
   function go(view, extra = {}) { Object.assign(state, { view }, extra); render(); window.scrollTo(0, 0); }
 
+  /* ---------- Anmeldeseite: ohne Anmeldung ist die App gesperrt ---------- */
+  const gated = () => (Sync.configured() && !Sync.loggedIn()) || state.gate === 'newpw';
+
+  function viewGate() {
+    const mode = Sync.loggedIn() ? 'newpw' : (state.gate && state.gate !== 'newpw' ? state.gate : 'login');
+    const titles = { login: 'Anmelden', signup: 'Konto erstellen', forgot: 'Passwort vergessen', newpw: 'Neues Passwort festlegen' };
+    const email = `<label>E-Mail<input name="email" type="email" autocomplete="username" required value="${esc(Sync.email || '')}"></label>`;
+    const back = `<div class="gate-links"><a href="#" data-gate="login">← Zurück zur Anmeldung</a></div>`;
+    const forms = {
+      login: `${email}
+        <label>Passwort<input name="password" type="password" autocomplete="current-password" required minlength="6"></label>
+        <button class="btn primary big">Anmelden</button>
+        <div class="gate-links"><a href="#" data-gate="forgot">Passwort vergessen?</a><a href="#" data-gate="signup">Konto erstellen</a></div>`,
+      signup: `${email}
+        <label>Passwort <span class="muted small">(mind. 8 Zeichen)</span><input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+        <label>Passwort wiederholen<input name="password2" type="password" autocomplete="new-password" required minlength="8"></label>
+        <button class="btn primary big">Konto erstellen</button>${back}`,
+      forgot: `<p class="muted small">Du bekommst eine E-Mail mit einem Link. Öffne ihn auf diesem Gerät, dann kannst du ein neues Passwort festlegen.</p>
+        ${email}<button class="btn primary big">Link schicken</button>${back}`,
+      newpw: `<p class="muted small">Angemeldet als <strong>${esc(Sync.email || '')}</strong>. Lege jetzt dein neues Passwort fest.</p>
+        <label>Neues Passwort <span class="muted small">(mind. 8 Zeichen)</span><input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+        <label>Passwort wiederholen<input name="password2" type="password" autocomplete="new-password" required minlength="8"></label>
+        <button class="btn primary big">Passwort speichern</button>`,
+    };
+    app.innerHTML = `<div class="gate"><div class="gate-card">
+      <div class="gate-brand"><img src="icon.svg" width="64" height="64" alt=""><div><h1>Zenkai</h1><p class="muted small">Tagebuch, Berichte & Verzeichnis für dein RP</p></div></div>
+      <h2>${titles[mode]}</h2>
+      ${(state.gateMsg || (Sync.status === 'login' && Sync.error)) ? `<div class="note">${esc(state.gateMsg || Sync.error)}</div>` : ''}
+      <form id="gate-form" data-mode="${mode}" class="form">${forms[mode]}</form>
+    </div></div>`;
+    const first = app.querySelector('#gate-form input:not([value]), #gate-form input[value=""]') || app.querySelector('#gate-form input[type=password]');
+    if (first && window.innerWidth > 720) first.focus();
+  }
+
+  async function submitGate(f, btn) {
+    const v = Object.fromEntries(new FormData(f));
+    const mode = f.dataset.mode;
+    if ((mode === 'signup' || mode === 'newpw') && v.password !== v.password2) { state.gateMsg = 'Die beiden Passwörter stimmen nicht überein.'; return render(); }
+    await busy(btn, async () => {
+      try {
+        if (mode === 'login') {
+          await Sync.login(v.email.trim(), v.password);
+          state.gate = null; state.gateMsg = ''; go('sessions'); toast('Willkommen zurück ✓');
+        } else if (mode === 'signup') {
+          const r = await Sync.signup(v.email.trim(), v.password);
+          if (r === 'confirm') { state.gate = 'login'; state.gateMsg = 'Fast geschafft: Wir haben dir eine E-Mail geschickt. Bestätige dein Konto über den Link darin – danach bist du direkt angemeldet.'; render(); }
+          else { state.gate = null; state.gateMsg = ''; go('sessions'); toast('Konto erstellt ✓'); }
+        } else if (mode === 'forgot') {
+          await Sync.recover(v.email.trim());
+          state.gate = 'login'; state.gateMsg = 'Falls es ein Konto mit dieser E-Mail gibt, ist ein Link unterwegs. Öffne ihn auf diesem Gerät.'; render();
+        } else if (mode === 'newpw') {
+          await Sync.updatePassword(v.password);
+          state.gate = null; state.gateMsg = ''; go('sessions'); toast('Neues Passwort gespeichert ✓');
+        }
+      } catch (e) { state.gateMsg = e.message; render(); }
+    });
+  }
+
   function render() {
+    if (gated()) { document.body.classList.add('gated'); viewGate(); return; }
+    document.body.classList.remove('gated');
     document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === state.view || (state.view === 'session' && b.dataset.view === 'sessions')));
     ({ sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
     Images.hydrate(app);
@@ -557,12 +617,17 @@
     b.title = Sync.error || (Sync.lastSync ? 'Letzter Abgleich: ' + new Date(Sync.lastSync).toLocaleString('de-DE') : 'Sync');
   }
   const typing = () => { const a = document.activeElement; return a && app.contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName); };
-  Sync.onStatus(() => { updateBadge(); if (state.view === 'settings' && !typing()) render(); });
+  Sync.onStatus(() => {
+    updateBadge();
+    // Abgelaufene Anmeldung → sofort zur Anmeldeseite (außer der Nutzer tippt gerade)
+    if (!typing() && (state.view === 'settings' || gated() !== document.body.classList.contains('gated'))) render();
+  });
   Sync.onRemoteChange(() => { if (typing()) state.pendingRender = true; else { render(); toast('🔄 Neue Daten vom anderen Gerät'); } });
   document.addEventListener('focusout', () => setTimeout(() => { if (state.pendingRender && !typing()) { state.pendingRender = false; render(); } }, 400));
 
   document.addEventListener('submit', async ev => {
     const f = ev.target;
+    if (f.id === 'gate-form') { ev.preventDefault(); return submitGate(f, ev.submitter || f.querySelector('button')); }
     if (f.id === 'sync-server') {
       ev.preventDefault();
       const v = Object.fromEntries(new FormData(f));
@@ -591,6 +656,8 @@
     const d = t.dataset;
     const s = Store.session(state.sessionId);
 
+    if (d.gate) { ev.preventDefault(); state.gate = d.gate; state.gateMsg = ''; return render(); }
+    if (gated()) return; // auf der Anmeldeseite sind keine anderen Aktionen möglich
     if (d.go) { ev.preventDefault(); return go(d.go); }
     if (d.view) return go(d.view);
     if (d.open) return go('session', { sessionId: d.open, tab: 'notes', detected: [] });
@@ -667,8 +734,15 @@
         return;
       case 'sync-now': return busy(t, async () => { await Sync.syncNow(); toast('Synchronisiert ✓'); });
       case 'sync-logout':
-        if (confirm('Abmelden? Die Daten bleiben auf diesem Gerät, werden aber nicht mehr abgeglichen.')) { await Sync.logout(); render(); }
-        return;
+        if (!confirm('Abmelden?\n\nDeine Daten bleiben in deinem Konto gespeichert und werden von diesem Gerät entfernt. Beim nächsten Anmelden sind sie wieder da.')) return;
+        return busy(t, async () => {
+          let ok = true;
+          try { await Sync.syncNow(); await Images.flush(); } catch (e) { ok = false; }
+          const pending = await Images.pendingCount();
+          if ((!ok || Sync.status !== 'ok' || pending) && !confirm('Achtung: Es konnte nicht alles hochgeladen werden (keine Verbindung?). Nicht übertragene Änderungen gehen beim Abmelden verloren.\n\nTrotzdem abmelden?')) return;
+          await Sync.logout(); Store.clearLocal(); await Images.clearAll();
+          state.gate = 'login'; state.gateMsg = 'Du bist abgemeldet.'; go('sessions');
+        });
       case 'sync-edit-server': state.editServer = true; return render();
       case 'sync-cancel-server': state.editServer = false; return render();
     }
@@ -730,7 +804,14 @@
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => { });
 
-  render();
-  updateBadge();
-  Sync.init();
+  // Start: zuerst Links aus Bestätigungs-/Reset-Mails verarbeiten, dann App oder Anmeldeseite zeigen
+  (async () => {
+    const r = await Sync.handleRedirect().catch(() => null);
+    if (r && r.error) state.gateMsg = r.error;
+    if (r && r.type === 'recovery') state.gate = 'newpw';
+    render();
+    updateBadge();
+    Sync.init();
+    if (r && r.type === 'signup') toast('E-Mail bestätigt – willkommen bei Zenkai ✓');
+  })();
 })();

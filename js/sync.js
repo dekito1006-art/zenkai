@@ -46,7 +46,9 @@ const Sync = (() => {
       'Invalid login credentials': 'E-Mail oder Passwort falsch.',
       'Email not confirmed': 'E-Mail-Adresse noch nicht bestätigt – bitte den Link in der Bestätigungs-Mail öffnen.',
       'User already registered': 'Für diese E-Mail gibt es schon ein Konto – bitte anmelden.',
+      'New password should be different from the old password.': 'Das neue Passwort muss sich vom alten unterscheiden.',
     };
+    if (/rate limit|too many|security purposes/i.test(m)) return 'Zu viele Versuche – bitte ein paar Minuten warten.';
     if (/relation .*zenkai_data.* does not exist|Could not find the table/i.test(m)) return 'Tabelle „zenkai_data“ fehlt – bitte supabase.sql im Supabase-SQL-Editor ausführen.';
     if (/Password should be at least/i.test(m)) return 'Das Passwort ist zu kurz (mindestens 6 Zeichen).';
     if (/signups? not allowed|signup.*disabled/i.test(m)) return 'Neue Konten sind abgeschaltet – bitte mit deinem bestehenden Konto anmelden.';
@@ -70,18 +72,54 @@ const Sync = (() => {
       throw e;
     }
   }
+  // Meldet sich auf diesem Gerät ein anderes Konto an als zuletzt, werden die lokalen Daten
+  // des vorherigen Kontos entfernt (sie liegen ja in dessen Cloud) – sonst würden sie vermischt.
+  function startSession(j) {
+    if (cfg.lastUserId && cfg.lastUserId !== j.user.id) { Store.clearLocal(); if (window.Images) Images.clearAll(); }
+    keepSession(j);
+    cfg.lastUserId = j.user.id; saveCfg();
+  }
   async function login(email, password) {
-    keepSession(await call('/auth/v1/token?grant_type=password', { method: 'POST', body: { email, password }, auth: false }));
-    return syncNow();
+    startSession(await call('/auth/v1/token?grant_type=password', { method: 'POST', body: { email, password }, auth: false }));
+    setStatus('ok');
+    syncNow().catch(() => { });
   }
   async function signup(email, password) {
-    const j = await call('/auth/v1/signup', { method: 'POST', body: { email, password }, auth: false });
-    if (j && j.access_token) { keepSession(j); await syncNow(); return 'ok'; }
+    const j = await call('/auth/v1/signup?redirect_to=' + encodeURIComponent(appUrl()), { method: 'POST', body: { email, password }, auth: false });
+    if (j && j.access_token) { startSession(j); setStatus('ok'); syncNow().catch(() => { }); return 'ok'; }
     return 'confirm'; // E-Mail-Bestätigung erforderlich
   }
   async function logout() {
     try { if (cfg.session) await call('/auth/v1/logout', { method: 'POST' }); } catch (e) { }
     cfg.session = null; cfg.lastSync = null; saveCfg(); setStatus(configured() ? 'login' : 'off');
+  }
+
+  /* Passwort vergessen: Supabase schickt eine Mail mit Link zurück zur App */
+  const appUrl = () => location.origin + location.pathname;
+  async function recover(email) {
+    await call('/auth/v1/recover?redirect_to=' + encodeURIComponent(appUrl()), { method: 'POST', body: { email }, auth: false });
+  }
+  async function updatePassword(password) {
+    await call('/auth/v1/user', { method: 'PUT', body: { password } });
+  }
+
+  /* Links aus Bestätigungs-/Reset-Mails: Supabase hängt die Anmeldung als #access_token=… an die Adresse */
+  async function handleRedirect() {
+    const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const clean = () => history.replaceState(null, '', location.pathname + location.search);
+    if (h.get('error_description')) { clean(); return { error: h.get('error_description').replace(/\+/g, ' ') }; }
+    const at = h.get('access_token'), rt = h.get('refresh_token');
+    if (!at || !rt || !configured()) return null;
+    clean();
+    try {
+      const c = conf();
+      const res = await fetch(c.url + '/auth/v1/user', { headers: { apikey: c.key, Authorization: 'Bearer ' + at } });
+      if (!res.ok) return { error: 'Der Link ist abgelaufen oder ungültig – bitte erneut anfordern.' };
+      const user = await res.json();
+      startSession({ access_token: at, refresh_token: rt, expires_in: +h.get('expires_in') || 3600, user });
+      setStatus('ok');
+      return { type: h.get('type') || 'login' }; // 'recovery' → neues Passwort setzen; 'signup' → bestätigt
+    } catch (e) { return { error: 'Keine Verbindung – bitte den Link nochmal öffnen.' }; }
   }
   function setServer(url, key) { cfg.url = url.trim(); cfg.key = key.trim(); saveCfg(); setStatus(configured() ? (loggedIn() ? 'ok' : 'login') : 'off'); }
 
@@ -172,7 +210,7 @@ const Sync = (() => {
   }
 
   return {
-    init, syncNow, login, signup, logout, setServer, configured, loggedIn, conf,
+    init, syncNow, login, signup, logout, recover, updatePassword, handleRedirect, setServer, configured, loggedIn, conf,
     uploadImage, downloadImage, deleteImage,
     get status() { return status; }, get error() { return lastError; },
     get email() { return cfg.email; }, get lastSync() { return cfg.lastSync; },

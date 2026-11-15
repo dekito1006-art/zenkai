@@ -162,6 +162,15 @@ const Store = (() => {
     data.settingsUpdatedAt = now;
     takeSnapshot(); write(); listeners.forEach(fn => fn());
   }
+  // Lokale Daten von diesem Gerät entfernen (Abmelden / Kontowechsel), OHNE Löschmarkierungen –
+  // die Daten bleiben in der Cloud erhalten und kommen bei der nächsten Anmeldung zurück.
+  function clearLocal() {
+    clearTimeout(timer);
+    data = defaults();
+    takeSnapshot();
+    try { localStorage.removeItem(KEY); localStorage.removeItem('zenkai.gmodels'); localStorage.removeItem('zenkai.gimgmodels'); } catch (e) { }
+  }
+
   function reset() {
     const now = Date.now();
     const deleted = { ...data.deleted };
@@ -172,7 +181,7 @@ const Store = (() => {
 
   return {
     get data() { return data; },
-    save, saveSoon, uid, exportJSON, importJSON, reset, DEFAULT_LISTS,
+    save, saveSoon, uid, exportJSON, importJSON, reset, clearLocal, DEFAULT_LISTS,
     syncable, mergeSynced, applySynced, stable, onChange: fn => listeners.push(fn),
     myChar: id => data.myChars.find(c => c.id === id),
     person: id => data.people.find(p => p.id === id),

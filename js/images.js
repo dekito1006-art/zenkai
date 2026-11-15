@@ -117,5 +117,12 @@ const Images = (() => {
     });
   }
 
-  return { save, remove, url, blobOf, hydrate, resize, flush, fromBase64, toBase64 };
+  // Alle lokal zwischengespeicherten Bilder entfernen (beim Abmelden). Hochgeladene Bilder bleiben in der Cloud.
+  async function clearAll() {
+    urls.forEach(u => URL.revokeObjectURL(u)); urls.clear();
+    await tx('readwrite', s => s.clear()).catch(() => { });
+  }
+  async function pendingCount() { return (await all().catch(() => [])).filter(r => !r.uploaded).length; }
+
+  return { save, remove, url, blobOf, hydrate, resize, flush, fromBase64, toBase64, clearAll, pendingCount };
 })();
