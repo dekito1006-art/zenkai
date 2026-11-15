@@ -21,8 +21,8 @@ const Store = (() => {
       openaiKey: '', openaiModel: 'gpt-4o-mini', openaiSttModel: 'gpt-4o-mini-transcribe',
       geminiKey: '', geminiModel: 'auto', // 'auto' = neuestes kostenloses Flash-Modell
       speechMode: 'browser',         // 'browser' (Live-Diktat) | 'ai' (Aufnahme + KI-Transkription)
-      diaryFormat: 'fliesstext',     // 'fliesstext' | 'gegliedert'
-      diaryLength: 'kurz',           // 'sehr kurz' | 'kurz' | 'mittel'
+      diaryFormat: 'szenen',         // 'szenen' | 'gegliedert' | 'fliesstext'
+      diaryLength: 'auto',           // 'auto' | 'sehr kurz' | 'kurz' | 'mittel' | 'ausführlich'
       creativity: 'treu',            // 'treu' | 'ausschmuecken'
       syncKeys: false,               // API-Schlüssel über den Sync auf eigene Geräte übertragen
       expeditionDivisions: ['Archäologie'],
@@ -44,8 +44,25 @@ const Store = (() => {
     if (out.settings.provider === 'openai' && !out.settings.openaiKey) out.settings.provider = 'gemini';
     if (!out.settings.geminiModel || /^gemini-(1\.|2\.0|2\.5-flash$|2\.5-pro$)/.test(out.settings.geminiModel)) out.settings.geminiModel = 'auto';
     COLLECTIONS.forEach(c => (out[c] || []).forEach(x => { if (!x.updatedAt) x.updatedAt = x.createdAt || 1; }));
+    // Einmalige Umstellung auf die verbesserte Schreibweise (Länge passend zur Erzählung, Szenen-Gliederung)
+    if (!out.settings.writeV2) {
+      if (out.settings.diaryLength === 'kurz') out.settings.diaryLength = 'auto';
+      if (out.settings.diaryFormat === 'gegliedert') out.settings.diaryFormat = 'szenen';
+      out.settings.writeV2 = true;
+    }
+    normalizeNames(out);
     return out;
   }
+
+  // Vor- und Nachname getrennt; "name" bleibt als zusammengesetzter Anzeigename erhalten
+  function splitName(x) {
+    if (x.firstName === undefined && x.lastName === undefined) {
+      const parts = String(x.name || '').trim().split(/\s+/).filter(Boolean);
+      x.firstName = parts[0] || ''; x.lastName = parts.slice(1).join(' ');
+    }
+    x.name = [x.firstName, x.lastName].filter(Boolean).join(' ') || x.name || '';
+  }
+  function normalizeNames(d) { ['myChars', 'people'].forEach(c => (d[c] || []).forEach(splitName)); }
 
   function load() {
     try {
@@ -142,6 +159,7 @@ const Store = (() => {
     takeSnapshot();
     // Veraltetes Modell aus einer alten App-Version (per Sync) korrigieren – wird beim nächsten Speichern an alle Geräte verteilt
     if (/^gemini-(1\.|2\.0|2\.5-flash$|2\.5-pro$)/.test(data.settings.geminiModel || '')) data.settings.geminiModel = 'auto';
+    normalizeNames(data); // Personen aus älteren App-Versionen bekommen Vor-/Nachname
     write();
     return merged;
   }
@@ -182,7 +200,7 @@ const Store = (() => {
   return {
     get data() { return data; },
     save, saveSoon, uid, exportJSON, importJSON, reset, clearLocal, DEFAULT_LISTS,
-    syncable, mergeSynced, applySynced, stable, onChange: fn => listeners.push(fn),
+    syncable, mergeSynced, applySynced, stable, splitName, onChange: fn => listeners.push(fn),
     myChar: id => data.myChars.find(c => c.id === id),
     person: id => data.people.find(p => p.id === id),
     session: id => data.sessions.find(s => s.id === id),

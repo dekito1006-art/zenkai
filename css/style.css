@@ -21,6 +21,29 @@ h1 { font-size: 1.5rem; margin: 0; } h2 { margin: 0 0 12px; } h3 { margin: 0; fo
 .sync-badge:empty { display: none; }
 .sync-badge.ok { color: var(--ok); } .sync-badge.error, .sync-badge.login { color: #ffb4b6; border-color: #6b2a2d; }
 .sync-badge.syncing::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .7s linear infinite; }
+/* Szenen, Expedition, Erstell-Auswahl */
+.scene { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: grid; gap: 6px; background: var(--bg); }
+.scene-head { display: flex; gap: 8px; align-items: center; }
+.scene-head input { font-weight: 600; }
+.scene-no { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--panel2); color: var(--accent2); display: inline-flex; align-items: center; justify-content: center; font-size: .8rem; font-weight: 700; }
+.scene-foot { display: grid; gap: 6px; }
+.scene-foot input { font-size: .9rem; padding: 6px 10px; }
+.exp-choice .row-between { margin: 0; }
+.exp-choice p { margin: 6px 0 0; }
+.qa-item.conflict .qa-q { color: var(--accent2); }
+.qa-item .btns { margin-top: 6px; }
+.gen-what { display: grid; gap: 6px; justify-items: center; }
+/* Verzeichnis: Abschnitte und Mehrfachauswahl */
+.section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 18px 0 8px; }
+.section-head h3 { margin: 0; }
+.section-head.warn h3, .warn { color: var(--accent2); }
+.bulk-bar { position: sticky; top: 52px; z-index: 5; background: var(--panel); border: 1px solid var(--accent); border-radius: var(--r); padding: 10px 12px; margin-bottom: 12px; display: grid; gap: 8px; }
+.bulk-bar .row-between { margin: 0; }
+.bulk-form { display: grid; grid-template-columns: 1fr 2fr auto auto; gap: 8px; }
+@media (max-width: 720px) { .bulk-form { grid-template-columns: 1fr 1fr; } .bulk-form #bulk-value { grid-column: 1 / -1; grid-row: 2; } }
+.card.selectable .tick { width: 22px; height: 22px; flex: none; border-radius: 6px; border: 2px solid var(--line); display: inline-flex; align-items: center; justify-content: center; color: #1a1208; font-weight: 800; font-size: .8rem; }
+.card.selected { border-color: var(--accent); background: rgba(242,140,40,.08); }
+.card.selected .tick { background: var(--accent); border-color: var(--accent); }
 .welcome { border-color: #5a3f1d; display: grid; gap: 8px; }
 .welcome .steps { margin: 0; }
 .welcome .btn { justify-self: start; }

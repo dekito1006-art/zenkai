@@ -41,44 +41,72 @@ const Reports = (() => {
   /* ---------- Kontext für die KI ---------- */
   function charLine(c) {
     if (!c) return '';
-    return [c.name, c.age ? c.age + ' Jahre' : '', c.rank, c.village, c.division && c.division !== 'Keine' ? 'Division ' + c.division : '', c.clan ? 'Clan ' + c.clan : '']
+    return [c.name, c.age ? c.age + ' Jahre' : '', c.rank, c.profession ? 'Beruf: ' + c.profession : '', c.village,
+      c.division && c.division !== 'Keine' ? 'Division ' + c.division : '', c.clan ? 'Clan ' + c.clan : '']
       .filter(Boolean).join(', ');
   }
 
-  function context(session) {
+  // Alter und Rang: Angabe in der Session hat Vorrang vor den Daten am Charakter (Charaktere entwickeln sich)
+  function ageOf(session) {
+    const me = Store.myChar(session.myCharId);
+    return String(session.age || (me && me.age) || '').trim();
+  }
+  function rankOf(session) {
+    const me = Store.myChar(session.myCharId);
+    return String(session.rank || (me && me.rank) || '').trim();
+  }
+  const words = t => (t || '').trim().split(/\s+/).filter(Boolean).length;
+
+  function context(session, withScenes = true) {
     const me = Store.myChar(session.myCharId);
     const parts = (session.participants || []).map(Store.person).filter(Boolean);
-    const age = ageOf(session);
-    let t = `SPIELCHARAKTER: ${charLine(me ? { ...me, age } : null) || 'unbekannt'}\n`;
+    const age = ageOf(session), rank = rankOf(session);
+    let t = `SPIELCHARAKTER: ${charLine(me ? { ...me, age, rank } : null) || 'unbekannt'}\n`;
+    if (rank) t += `RANG DES CHARAKTERS IN DIESER SESSION: ${rank}\n`;
     if (age) t += `ALTER DES CHARAKTERS IN DIESER SESSION: ${age} Jahre\n`;
     if (me && me.voice) t += `PERSÖNLICHKEIT & SPRECHWEISE: ${me.voice}\n`;
     if (session.ingameDate) t += `INGAME-DATUM: ${session.ingameDate}\n`;
     if (session.title) t += `SESSION-TITEL: ${session.title}\n`;
-    if (parts.length) t += `BETEILIGTE PERSONEN:\n${parts.map(p => '- ' + charLine(p) + (p.relation ? ` (Beziehung: ${p.relation})` : '')).join('\n')}\n`;
+    if (parts.length) t += `BETEILIGTE PERSONEN (aus dem Verzeichnis):\n${parts.map(p => '- ' + charLine(p) + (p.relation ? ` (Beziehung: ${p.relation})` : '')).join('\n')}\n`;
     t += `\nERZÄHLUNG DES SPIELERS ZUR SESSION:\n${session.notes || '(keine)'}\n`;
     const qa = (session.qa || []).filter(x => x.a && x.a.trim());
     if (qa.length) t += `\nNACHFRAGEN UND ANTWORTEN DES SPIELERS:\n${qa.map(x => `F: ${x.q}\nA: ${x.a}`).join('\n')}\n`;
+    const sc = withScenes && session.analysis && (session.analysis.scenes || []).filter(x => x.title || x.summary);
+    if (sc && sc.length) t += `\nSZENEN DER SESSION (vom Spieler geprüft, chronologisch – das ist die verbindliche Struktur):\n` +
+      sc.map((x, i) => `${i + 1}. ${x.title}: ${x.summary}${x.feeling ? ' [Gefühl: ' + x.feeling + ']' : ''}`).join('\n') + '\n';
     return t;
   }
 
-  function questionsPrompt(session, withExpedition) {
-    return {
-      system: 'Du hilfst einem Rollenspieler im Naruto-Universum, nach einer Spielsession Berichte zu schreiben. ' +
-        'Er hat frei erzählt (oft per Spracheingabe, daher evtl. Tippfehler bei Namen). Antworte nur mit JSON.',
-      user: context(session) +
-        `\nAUFGABE: Daraus sollen entstehen: ein Tagebucheintrag (Erlebtes, Gefühle, Gelerntes)` +
-        (withExpedition ? ' und ein Expeditionsbericht der Archäologie-Division (Auftrag, Ort, Teilnehmer, Verlauf, Fundstätte, Funde mit Zustand und Verbleib, Erkenntnisse, Vorkommnisse, Ergebnis, Empfehlungen)' : '') +
-        '.\nPrüfe, welche WICHTIGEN Informationen fehlen oder unklar/widersprüchlich sind (auch unklar verstandene Namen). ' +
-        'Stelle höchstens 5 kurze, konkrete Nachfragen in der Du-Form, die wichtigste zuerst. Frage nichts, was schon beantwortet ist. ' +
-        'Wenn alles Wesentliche klar ist, gib eine leere Liste zurück. ' +
-        'Format: {"questions":[{"q":"Frage","why":"wofür (z. B. Expeditionsbericht: Funde)"}]}',
-    };
-  }
-
-  // Alter: Angabe in der Session hat Vorrang vor dem Alter am Charakter
-  function ageOf(session) {
+  /* Schritt 1: Analyse – Szenen, Widersprüche, Expedition ja/nein, Rückfragen, Personen und Berufe */
+  function analyzePrompt(session, expeditionPossible) {
+    const L = Store.data.settings.lists;
+    const known = Store.data.people.map(p => `${p.name}${p.profession ? ' (' + p.profession + ')' : ''}${p.rank ? ' [' + p.rank + ']' : ''}`).join('; ') || '(keine)';
     const me = Store.myChar(session.myCharId);
-    return String(session.age || (me && me.age) || '').trim();
+    return {
+      system: 'Du analysierst die Erzählung eines Rollenspielers im Naruto-Universum nach einer Spielsession, damit daraus später ein Tagebuch' +
+        (expeditionPossible ? ' und ggf. ein Expeditionsbericht' : '') + ' entsteht. Die Erzählung ist oft per Sprache diktiert (Tippfehler bei Namen möglich). ' +
+        'Sei gründlich und genau. Antworte nur mit JSON.',
+      user: context(session, false) +
+        `\nBEKANNTE PERSONEN IM VERZEICHNIS: ${known}\nEIGENER CHARAKTER (nicht als Person aufführen): ${me ? me.name : '-'}\n` +
+        `\nAUFGABE: Antworte als JSON:\n{\n` +
+        ` "scenes": [{"title": "Überschrift, 2–5 Wörter", "summary": "was passierte – MIT Grund (warum) und Ergebnis/Folge, 1–3 Sätze", "people": ["Namen"], "feeling": "Gefühl des Charakters dabei, falls erwähnt, sonst \\"\\""}],\n` +
+        (expeditionPossible ? ` "expedition": true oder false,\n` : '') +
+        ` "conflicts": [{"type": "rank|age|title|other", "text": "kurze Frage in Du-Form", "value": "Wert, der laut Erzählung stimmt"}],\n` +
+        ` "questions": [{"q": "Frage in Du-Form", "why": "wofür"}],\n` +
+        ` "newPeople": [{"firstName": "", "lastName": "", "rank": "", "village": "", "division": "", "clan": "", "profession": "", "note": ""}],\n` +
+        ` "updates": [{"name": "bekannter Name", "profession": "", "rank": "", "note": ""}],\n` +
+        ` "lessons": ["was der Charakter gelernt hat"]\n}\n` +
+        `REGELN:\n` +
+        `- scenes: streng chronologisch; jede eigenständige Begebenheit (Ort- oder Personenwechsel, neues Vorhaben) ist eine eigene Szene; nichts zusammenlegen, nichts weglassen; Ursache und Folge festhalten (z. B. "schickt ihn ins Missionsbüro, um sich der Materialsammlung anzuschließen").\n` +
+        `- GENAUIGKEIT: Begründungen ("weil", "deshalb") NUR, wenn sie so in der Erzählung stehen – nie selbst eine Ursache erfinden oder zwei Fakten falsch verknüpfen. Wer etwas getan hat, genau so wiedergeben, wie erzählt (z. B. "Ich habe Jinsei geschrieben, als ich Genin wurde; er antwortete viel später – er ist selbst noch kein Genin").\n` +
+        `- Versprechen, Abmachungen, Gegenleistungen, Geldgeber, Ratschläge und neue Freundschaften immer mit Inhalt festhalten (z. B. "leiht ihm das Geld gegen das Versprechen, ein großer Ninja zu werden"; "sein Cousin hat ihm das Geld geliehen").\n` +
+        (expeditionPossible ? `- expedition: nur true, wenn in der Session tatsächlich eine archäologische Expedition, Erkundung, Ausgrabung oder Bergung stattfand. Training, Alltag oder eine normale Mission sind KEINE Expedition.\n` : '') +
+        `- conflicts: Widersprüche zwischen den Charakter-/Session-Daten (Rang, Alter, Titel) und der Erzählung, z. B. Rang "Chunin", aber Erzählung "als ich Genin wurde" oder Titel "Monat", Erzählung "Tag". Die Session kann in der Vergangenheit liegen – der Charakter hatte damals evtl. einen niedrigeren Rang. value = der Wert, der laut Erzählung ZUM ZEITPUNKT DER SESSION galt (im Beispiel "Genin"), beim Titel ein korrigierter Titel. Leere Liste, wenn keine. Für rank nutze: ${L.ranks.join(', ')}.\n` +
+        `- questions: höchstens 4 wirklich wichtige fehlende oder unklare Informationen; nichts fragen, was beantwortet ist (auch nicht in den bisherigen Nachfragen).\n` +
+        `- newPeople: alle namentlich genannten Personen, die NICHT im Verzeichnis stehen. Vor- und Nachname trennen (nur einer bekannt → anderer ""). Beschreibungen wie "Sensei mit den blauen Haaren" nur, wenn ein Name genannt wird. profession = Beruf/Funktion, falls erkennbar (z. B. Schmied, Händler, Sensei/Ausbilder, Medic, Missionsbüro). Für rank/village/division nutze möglichst: ${L.ranks.join(', ')} / ${L.villages.join(', ')} / ${L.divisions.join(', ')}. note = ein Satz, wie die Person vorkam.\n` +
+        `- updates: für bekannte Personen nur NEUE Erkenntnisse laut Erzählung (z. B. Beruf, Rang), sonst weglassen.\n` +
+        `- Unbekannte Werte als "".`,
+    };
   }
 
   // Wie ein Charakter dieses Alters schreibt – damit ein 11-jähriger Genin nicht wie ein Jonin klingt
@@ -95,24 +123,47 @@ const Reports = (() => {
 
   function creativityRule() {
     return Store.data.settings.creativity === 'ausschmuecken'
-      ? 'Du darfst Stimmung und Details passend ausschmücken, aber keine neuen Handlungsereignisse, Personen oder Funde erfinden.'
-      : 'Halte dich streng an die Notizen. Erfinde keine Ereignisse, Personen, Funde oder Details, die nicht genannt sind.';
+      ? 'Du darfst Stimmung, Sinneseindrücke und Gedanken ergänzen – aber keine Ereignisse, Personen oder Funde erfinden, verändern oder weglassen.'
+      : 'Halte dich streng an die Erzählung. Erfinde keine Ereignisse, Personen, Funde oder Details, die nicht genannt sind, und lass nichts Wichtiges weg.';
   }
 
-  function diaryPrompt(session) {
+  // Länge: "auto" richtet sich nach der Menge der Erzählung – eine lange Session wird nicht auf 200 Wörter zusammengepresst
+  function lengthRule(session) {
     const s = Store.data.settings;
-    const len = { 'sehr kurz': '80–120 Wörter', 'kurz': '150–220 Wörter', 'mittel': '250–350 Wörter' }[s.diaryLength] || '150–220 Wörter';
-    const fmt = s.diaryFormat === 'gegliedert'
-      ? 'Gliedere den Eintrag in drei kurze Abschnitte mit den Überschriften "Erlebt", "Gefühlt", "Gelernt".'
-      : 'Schreibe einen zusammenhängenden Fließtext, der nacheinander behandelt, was erlebt wurde, was der Charakter dabei gefühlt hat und was er gelernt hat.';
+    const n = words(session.notes) + (session.qa || []).reduce((a, x) => a + words(x.a), 0);
+    const scenes = ((session.analysis && session.analysis.scenes) || []).length;
+    const auto = Math.max(160, Math.min(800, Math.round(Math.max(n * 0.7, scenes * 45) / 10) * 10));
+    return {
+      auto: `ca. ${auto} Wörter (passend zur Länge der Erzählung)`, 'sehr kurz': '80–120 Wörter', kurz: '150–220 Wörter',
+      mittel: '250–350 Wörter', 'ausführlich': '400–600 Wörter',
+    }[s.diaryLength] || `ca. ${auto} Wörter`;
+  }
+
+  function diaryFormatRule() {
+    const f = Store.data.settings.diaryFormat;
+    if (f === 'fliesstext') return 'FORM: Zusammenhängender Text ohne Überschriften – ein Absatz pro Szene in chronologischer Reihenfolge, am Ende ein Absatz zu Gefühlen und Gelerntem.';
+    if (f === 'gegliedert') return 'FORM: Drei Abschnitte mit den Überschriften "Erlebt", "Gefühlt", "Gelernt" (jeweils allein in einer Zeile). "Erlebt" chronologisch in mehreren Absätzen (ein Absatz pro Szene). Unter "Gefühlt" NUR Gefühle (mit Bezug, wodurch), unter "Gelernt" NUR Lehren und Erkenntnisse – keine Ereignisse wiederholen.';
+    return 'FORM: Für jede Szene eine kurze, lebendige Überschrift allein in einer Zeile (aus Sicht des Charakters, z. B. "In der Schmiede"), darunter ein Absatz. ' +
+      'Danach die Abschnitte "Wie ich mich fühle" und "Was ich heute gelernt habe" (jeweils allein in einer Zeile als Überschrift, darunter 1–4 Sätze; NUR echte Gefühle bzw. Lehren, keine Ereignisse wiederholen).';
+  }
+
+  /* Schritt 2: Tagebuch aus den geprüften Szenen */
+  function diaryPrompt(session) {
+    const age = ageOf(session);
     return {
       system: 'Du bist Schreibassistent für ein deutschsprachiges Rollenspiel im Naruto-Universum. ' +
         'Du schreibst Tagebucheinträge in der Ich-Form aus Sicht des gespielten Charakters – persönlich, ehrlich, im Ton des Charakters. ' +
         'Verwende Naruto-Begriffe (Jutsu, Chakra, Dorfnamen, Ränge) natürlich. ' + creativityRule(),
       user: context(session) +
-        `\nAUFGABE: Schreibe den Tagebucheintrag zu dieser Session. Länge: ${len}. ${fmt} ` +
-        (ageStyle(ageOf(session)) ? `\nALTERSGERECHT SCHREIBEN: ${ageStyle(ageOf(session))} Wortwahl, Satzbau, Gedankenwelt und Reife müssen zu diesem Alter passen.\n` : '') +
-        'Beginne mit einer kurzen Datumszeile (Ingame-Datum, falls bekannt). Gib nur den Eintrag zurück, ohne Kommentar.',
+        `\nAUFGABE: Schreibe den Tagebucheintrag zu dieser Session. Länge: ${lengthRule(session)}.\n${diaryFormatRule()}\n` +
+        `INHALT – unbedingt einhalten:\n` +
+        `- Alle Szenen in genau dieser Reihenfolge, keine weglassen, keine zusammenlegen.\n` +
+        `- Zu jedem Ereignis den Grund und die Folge behalten (weil, deshalb, dafür, damit) – der Leser muss verstehen, warum etwas passiert.\n` +
+        `- Jede Person beim ersten Auftreten mit ihrer Rolle nennen (z. B. "der Schmied Yokurai Yakasaki", "Kazuhiko, ein Chunin").\n` +
+        `- Versprechen, Abmachungen, neue Freundschaften und gelernte Techniken sind wichtig – nie weglassen.\n` +
+        (ageStyle(age) ? `- ALTERSGERECHT: ${ageStyle(age)} Wortwahl, Satzbau und Gedankenwelt müssen dazu passen.\n` : '') +
+        (session.ingameDate ? `- Erste Zeile: ${session.ingameDate}\n` : `- KEINE Datumszeile und kein erfundenes Datum.\n`) +
+        `- Kein Markdown (keine Sternchen, Rauten oder Aufzählungszeichen). Gib nur den Eintrag zurück.`,
     };
   }
 
@@ -141,20 +192,6 @@ const Reports = (() => {
     };
   }
 
-  function detectPrompt(session) {
-    const known = Store.data.people.map(p => p.name).join(', ') || '(keine)';
-    const L = Store.data.settings.lists;
-    return {
-      system: 'Du extrahierst Personen aus Rollenspiel-Notizen im Naruto-Universum. Antworte nur mit JSON.',
-      user: `Bereits bekannte Personen (NICHT erneut aufführen): ${known}\n` +
-        `Eigener Charakter (NICHT aufführen): ${(Store.myChar(session.myCharId) || {}).name || '-'}\n\n` +
-        `NOTIZEN:\n${session.notes}\n\n` +
-        'Finde alle weiteren namentlich genannten Personen. Antworte als {"persons":[{"name","rank","village","division","clan","note"}]}. ' +
-        `Nutze für rank möglichst: ${L.ranks.join(', ')}; für village: ${L.villages.join(', ')}; für division: ${L.divisions.join(', ')}. ` +
-        'Unbekannte Werte als "". note = ein kurzer Satz, wie die Person in der Session vorkam.',
-    };
-  }
-
   /* ---------- KI-Bild zum Tagebuch / Bericht ---------- */
   const IMG_STYLES = {
     skizze: { label: '✏️ Skizze', en: 'pencil and ink field sketch on an aged, slightly stained notebook page, like an explorer\'s journal, loose cross-hatching, a few small illegible margin notes' },
@@ -169,7 +206,7 @@ const Reports = (() => {
     const parts = (session.participants || []).map(Store.person).filter(Boolean);
     const text = kind === 'diary' ? (session.diary && session.diary.text) : expeditionText(session);
     const who = [
-      me ? `Main character: ${me.name}${age ? ', ' + age + ' years old' : ''}${me.rank ? ', rank ' + me.rank : ''}${me.looks ? ', appearance: ' + me.looks : ''}.` : '',
+      me ? `Main character: ${me.name}${age ? ', ' + age + ' years old' : ''}${rankOf(session) ? ', rank ' + rankOf(session) : ''}${me.looks ? ', appearance: ' + me.looks : ''}.` : '',
       ...parts.filter(p => p.looks).map(p => `${p.name}${p.age ? ' (' + p.age + ')' : ''}: ${p.looks}.`),
     ].filter(Boolean).join(' ');
     return {
@@ -193,7 +230,8 @@ const Reports = (() => {
     L.push('📜 EXPEDITIONSBERICHT – ARCHÄOLOGIE-DIVISION');
     L.push('════════════════════════════════');
     EXP_HEAD.forEach(f => { if (e[f.key]) L.push(`${f.label}: ${e[f.key]}`); });
-    L.push(`Verfasser: ${charLine(Store.myChar(session.myCharId))}`);
+    const me = Store.myChar(session.myCharId);
+    L.push(`Verfasser: ${charLine(me ? { ...me, rank: rankOf(session), age: '' } : null)}`);
     L.push(`Datum (real): ${session.date || ''}`);
     const sec = (f) => { if (e[f.key]) { L.push(''); L.push(f.label.toUpperCase()); L.push(e[f.key]); } };
     EXP_SECTIONS.slice(0, 4).forEach(sec);
@@ -216,6 +254,6 @@ const Reports = (() => {
 
   return {
     EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition,
-    diaryPrompt, refinePrompt, expeditionPrompt, detectPrompt, questionsPrompt, imagePrompt, IMG_STYLES, diaryText, expeditionText, charLine,
+    diaryPrompt, refinePrompt, expeditionPrompt, analyzePrompt, imagePrompt, IMG_STYLES, rankOf, ageOf, diaryText, expeditionText, charLine,
   };
 })();

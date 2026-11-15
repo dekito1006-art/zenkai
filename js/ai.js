@@ -14,7 +14,7 @@ const AI = (() => {
 
   function available() {
     const s = S();
-    return (s.provider === 'openai' && s.openaiKey) || (s.provider === 'gemini' && s.geminiKey);
+    return !!((s.provider === 'openai' && s.openaiKey) || (s.provider === 'gemini' && s.geminiKey));
   }
 
   async function readError(res) {
@@ -64,7 +64,13 @@ const AI = (() => {
   const SLOW = 'zenkai.gslow';
   const slowMap = () => { try { return JSON.parse(localStorage.getItem(SLOW)) || {}; } catch (e) { return {}; } };
   const markSlow = m => { const x = slowMap(); x[m] = Date.now() + 6 * 3600e3; localStorage.setItem(SLOW, JSON.stringify(x)); };
-  const bySpeed = list => { const x = slowMap(), now = Date.now(); return [...list.filter(m => !(x[m] > now)), ...list.filter(m => x[m] > now)]; };
+  // Reihenfolge: schnelle Flash-Modelle → höchstens ein „langsames“ Flash-Modell (Qualität vor Tempo) → Lite-Modelle → Rest
+  const bySpeed = list => {
+    const x = slowMap(), now = Date.now(), slow = m => x[m] > now, lite = m => /-lite$/.test(m);
+    const fastFull = list.filter(m => !lite(m) && !slow(m)), slowFull = list.filter(m => !lite(m) && slow(m));
+    const lites = list.filter(lite).sort((a, b) => slow(a) - slow(b));
+    return [...fastFull, ...slowFull.slice(0, fastFull.length ? 0 : 1), ...lites, ...slowFull.slice(fastFull.length ? 0 : 1)];
+  };
 
   const HEDGE_MS = 8000;    // so lange auf ein Modell warten, bevor parallel das nächste gefragt wird
   const TOTAL_MS = 150000;  // Obergrenze für eine Anfrage insgesamt
