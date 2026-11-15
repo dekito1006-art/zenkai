@@ -20,9 +20,11 @@
   const today = () => new Date().toISOString().slice(0, 10);
   const fmtDate = d => d ? new Date(d + 'T00:00').toLocaleDateString('de-DE') : '';
   const micBtn = target => `<button class="btn ghost small mic" data-mic="${target}" type="button">🎤 Diktieren</button>`;
-  // Expeditionsbericht: nur für Divisionen mit Berichtspflicht – und nur, wenn in der Session wirklich eine Expedition war
-  const canExpedition = s => { const c = Store.myChar(s.myCharId); return !!c && D().settings.expeditionDivisions.includes(c.division); };
-  const needsExpedition = s => canExpedition(s) && s.hasExpedition !== false;
+  // Eine Session = ein Ingame-Monat: Pflicht-Tagebuch + 0..n Einsätze mit je eigenem Bericht
+  const opsOf = s => (s.ops = s.ops || []);
+  const opById = (s, id) => opsOf(s).find(o => o.id === id);
+  const opLabel = op => { const t = Reports.opType(op); return `${t.icon} ${t.label}${op.title ? ': ' + op.title : ''}`; };
+  const doneReports = s => opsOf(s).filter(Reports.opHasContent).length;
   const fullName = p => [p.firstName, p.lastName].filter(Boolean).join(' ') || p.name || '';
   const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
   const str = v => (v == null ? '' : String(v)).trim();
@@ -148,14 +150,14 @@
       <div class="head"><h1>Sessions</h1><button class="btn primary" data-act="new-session">＋ Neue Session</button></div>
       ${welcome}${aiHint}
       ${list.length ? `<div class="cards">${list.map(s => {
-        const c = Store.myChar(s.myCharId); const exp = needsExpedition(s);
+        const c = Store.myChar(s.myCharId); const nOps = opsOf(s).length, nDone = doneReports(s);
         return `<button class="card" data-open="${s.id}">
           <div class="card-top"><strong>${esc(s.title || 'Ohne Titel')}</strong><span class="muted">${fmtDate(s.date)}</span></div>
           <div class="muted small">${esc(c ? c.name : '–')}${s.ingameDate ? ' · ' + esc(s.ingameDate) : ''} · ${(s.participants || []).length} Personen</div>
           ${s.diary && s.diary.imageId ? `<img class="thumb" data-img="${esc(s.diary.imageId)}" alt="">` : ''}
           <div class="badges">
             <span class="badge ${s.diary && s.diary.text ? 'ok' : ''}">📖 Tagebuch</span>
-            ${exp ? `<span class="badge ${s.expedition && s.expedition.verlauf ? 'ok' : ''}">📜 Expedition</span>` : ''}
+            ${nOps ? `<span class="badge ${nDone === nOps ? 'ok' : ''}">📜 ${nDone}/${nOps} Bericht${nOps > 1 ? 'e' : ''}</span>` : ''}
           </div></button>`;
       }).join('')}</div>` : (D().myChars.length ? '<div class="empty">Noch keine Sessions. Starte mit „Neue Session“.</div>' : '')}`;
   }
@@ -166,7 +168,7 @@
     const s = {
       id: Store.uid(), createdAt: Date.now(), date: today(), title: '', ingameDate: '',
       myCharId: last ? last.myCharId : D().myChars[0].id, notes: '', participants: [],
-      diary: { text: '' }, expedition: Reports.emptyExpedition(),
+      diary: { text: '' }, ops: [],
     };
     D().sessions.push(s); Store.save();
     go('session', { sessionId: s.id, tab: 'notes', detected: [] });
@@ -175,27 +177,25 @@
   function viewSession() {
     const s = Store.session(state.sessionId);
     if (!s) return go('sessions');
-    const exp = needsExpedition(s);
-    if (state.tab === 'expedition' && !exp) state.tab = 'notes';
-    const tabs = [['notes', '1 · Erzählen'], ['diary', '2 · Tagebuch'], ...(exp ? [['expedition', '3 · Expedition']] : []), ['export', '✓ Export']];
+    if (state.tab === 'expedition') state.tab = 'ops';
+    const tabs = [['notes', '1 · Erzählen'], ['diary', '2 · Tagebuch'], ['ops', `3 · Einsätze${opsOf(s).length ? ' (' + opsOf(s).length + ')' : ''}`], ['export', '✓ Export']];
     app.innerHTML = `
       <div class="head"><button class="btn ghost" data-go="sessions">← Zurück</button>
         <button class="btn ghost danger small" data-act="del-session">Löschen</button></div>
       <div class="grid2 meta">
         <label class="wide">Titel<input data-s="title" value="${esc(s.title)}" placeholder="z. B. Die Ruinen von Uzushio"></label>
         <label>Datum (real)<input type="date" data-s="date" value="${esc(s.date)}"></label>
-        <label>Ingame-Datum<input data-s="ingameDate" value="${esc(s.ingameDate)}" placeholder="z. B. 12. Tag des Frühlings"></label>
+        <label>Ingame-Monat<input data-s="ingameDate" value="${esc(s.ingameDate)}" placeholder="z. B. Monat 2"></label>
         <label>Gespielter Charakter<select data-s="myCharId">${D().myChars.map(c => `<option value="${c.id}" ${c.id === s.myCharId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
         <label>Rang in dieser Session<input data-s="rank" list="dl-srank" value="${esc(s.rank)}" placeholder="${esc((Store.myChar(s.myCharId) || {}).rank ? (Store.myChar(s.myCharId).rank + ' (vom Charakter)') : 'z. B. Genin')}">${dl('dl-srank', L().ranks)}</label>
         <label>Alter in dieser Session<input data-s="age" inputmode="numeric" value="${esc(s.age)}" placeholder="${esc((Store.myChar(s.myCharId) || {}).age ? (Store.myChar(s.myCharId).age + ' (vom Charakter)') : 'z. B. 13')}"></label>
       </div>
       <nav class="subtabs">${tabs.map(([k, l]) => `<button class="${state.tab === k ? 'active' : ''}" data-tab="${k}">${l}</button>`).join('')}</nav>
       <section id="tab"></section>`;
-    ({ notes: tabNotes, diary: tabDiary, expedition: tabExpedition, export: tabExport })[state.tab](s, $('#tab'));
+    ({ notes: tabNotes, diary: tabDiary, ops: tabOps, export: tabExport })[state.tab](s, $('#tab'));
   }
 
   function tabNotes(s, el) {
-    const canExp = canExpedition(s), exp = needsExpedition(s);
     const ppl = [...D().people].sort(byName);
     const qa = s.qa || [], conflicts = s.conflicts || [];
     const ai = AI.available();
@@ -208,8 +208,8 @@
         <textarea id="notes" data-s="notes" rows="8" placeholder="…oder hier tippen. z. B.: Wir sind mit Kenji zu den Ruinen bei Uzushio, da war eine versiegelte Kammer…">${esc(s.notes)}</textarea>
         <div class="muted small right">${words(s.notes)} Wörter</div>
       </div>
-      ${canExp ? expeditionChoice(s, ai) : ''}
       ${scenes.length ? scenesPanel(s, scenes) : ''}
+      ${scenes.length || opsOf(s).length ? opsPanel(s) : ''}
       ${conflicts.length || qa.length ? `<div class="panel qa">
         <div class="row-between"><h3>🤔 Rückfragen</h3><span class="muted small">Beantworten oder leer lassen</span></div>
         ${conflicts.map((c, i) => `<div class="qa-item conflict">
@@ -226,13 +226,14 @@
       <div class="cta">
         ${!ai
         ? `<button class="btn primary big" data-tab="diary">✍️ Weiter: Tagebuch schreiben</button>
-           ${exp ? '<button class="btn ghost" data-tab="expedition">📜 Expeditionsbericht ausfüllen</button>' : ''}
+           <button class="btn ghost" data-tab="ops">📜 Einsätze & Berichte</button>
            <p class="muted small">Du arbeitest ohne KI – deine Notizen bleiben hier als Gedächtnisstütze stehen. Optional kann Zenkai die Berichte mit deiner eigenen, kostenlosen KI schreiben: <a href="#" data-go="settings">Einstellungen → KI-Schreibhilfe</a>.</p>`
         : scenes.length
-        ? `${canExp ? `<div class="gen-what"><span class="muted small">Was soll erstellt werden?</span><div class="chips">
-              ${[['diary', '📖 Nur Tagebuch'], ['report', '📜 Nur Bericht'], ['both', '📖+📜 Beides']].map(([k, l]) => `<button class="chip ${genWhat(s) === k ? 'on' : ''}" data-gen-what="${k}">${l}</button>`).join('')}
-            </div></div>` : ''}
-           <button class="btn primary big" data-act="gen-all">✨ ${{ diary: 'Tagebuch', report: 'Expeditionsbericht', both: 'Tagebuch + Expeditionsbericht' }[genWhat(s)]} schreiben</button>
+        ? `<div class="gen-what"><span class="muted small">Was soll geschrieben werden?</span><div class="chips">
+              <button class="chip ${wantDiary(s) ? 'on' : ''}" data-gen-diary="1" ${s.diary.text ? '' : 'disabled title="Das Tagebuch ist Pflicht"'}>📖 Tagebuch${s.diary.text ? '' : ' (Pflicht)'}</button>
+              ${opsOf(s).map(op => `<button class="chip ${op.wanted ? 'on' : ''}" data-op-want="${op.id}">${esc(opLabel(op))}</button>`).join('')}
+            </div></div>
+           <button class="btn primary big" data-act="gen-all" ${genCount(s) ? '' : 'disabled'}>✨ ${genTitle(s)}</button>
            <button class="btn ghost" data-act="ask">Neu analysieren (nach Änderungen an der Erzählung)</button>`
         : `<button class="btn primary big" data-act="ask">✨ Weiter – Zenkai analysiert die Session</button>
            <p class="muted small">Zenkai zerlegt deine Erzählung in Szenen, prüft Widersprüche und stellt Rückfragen. Danach schreibst du mit einem Tipp.</p>`}
@@ -247,17 +248,26 @@
       </div>`;
   }
 
-  function expeditionChoice(s, ai) {
-    const v = s.hasExpedition;
-    return `<div class="panel exp-choice">
-      <div class="row-between"><strong>📜 Gab es in dieser Session eine Expedition?</strong>
-        <div class="chips">
-          <button class="chip ${v === true ? 'on' : ''}" data-exp-set="yes">Ja</button>
-          <button class="chip ${v === false ? 'on' : ''}" data-exp-set="no">Nein</button>
-          ${ai ? `<button class="chip ${v == null ? 'on' : ''}" data-exp-set="auto">KI erkennt es</button>` : ''}
-        </div></div>
-      ${s.expeditionAuto && v != null ? `<p class="muted small">Von Zenkai erkannt: ${v ? 'ja, Expedition – es wird auch ein Expeditionsbericht geschrieben' : 'keine Expedition – es wird nur das Tagebuch geschrieben'}. Stimmt das nicht? Oben ändern.</p>` : ''}
-    </div>`;
+  /* Einsätze des Monats: erkannt von der KI, frei änderbar */
+  const typeOptions = sel => Object.entries(Reports.OP_TYPES).map(([k, t]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${t.icon} ${t.label}</option>`).join('');
+  function opsPanel(s) {
+    const ops = opsOf(s);
+    return fold('ops-detect', '📜 Einsätze in diesem Monat', ops.length ? `${ops.length} erkannt` : 'keine', `
+      <p class="muted small">Das Tagebuch erzählt den ganzen Monat. Für jeden Einsatz entsteht zusätzlich ein eigener Bericht. Stimmt etwas nicht? Art und Titel ändern, entfernen oder hinzufügen.</p>
+      ${ops.length ? ops.map(op => `<div class="op-row">
+        <select data-op-type="${op.id}">${typeOptions(op.type)}</select>
+        <input data-op-field="${op.id}" data-k="title" value="${esc(op.title || '')}" placeholder="Titel, z. B. Material sammeln für den Schmied">
+        <button class="btn ghost small" data-op-del="${op.id}" title="Einsatz entfernen">✕</button>
+        ${op.summary || (op.scenes || []).length ? `<div class="muted small op-sum">${esc(op.summary || '')}${(op.scenes || []).length ? ` · Szene ${op.scenes.join(', ')}` : ''}</div>` : ''}
+      </div>`).join('') : '<p class="muted small">Keine Einsätze erkannt – dann gibt es nur das Tagebuch.</p>'}
+      <div class="row"><select id="op-new-type">${typeOptions('mission')}</select><button class="btn ghost small" data-act="op-add">＋ Einsatz hinzufügen</button></div>`, true);
+  }
+  const wantDiary = s => !s.diary.text || s.genDiary !== false;
+  const genCount = s => (wantDiary(s) ? 1 : 0) + opsOf(s).filter(o => o.wanted).length;
+  function genTitle(s) {
+    const n = opsOf(s).filter(o => o.wanted).length;
+    const parts = [wantDiary(s) && 'Tagebuch', n && `${n} Bericht${n > 1 ? 'e' : ''}`].filter(Boolean);
+    return parts.length ? parts.join(' + ') + ' schreiben' : 'Nichts ausgewählt';
   }
 
   function scenesPanel(s, scenes) {
@@ -334,14 +344,23 @@
   async function analyze(s, quiet) {
     if (!s.notes.trim()) throw new Error('Erzähl zuerst, was passiert ist.');
     const marked = markKnownPeople(s);
-    const canExp = canExpedition(s);
-    const r = await AI.completeJSON(Reports.analyzePrompt(s, canExp));
+    const r = await AI.completeJSON(Reports.analyzePrompt(s));
     s.analysis = {
       at: Date.now(),
       scenes: arr(r.scenes).map(x => ({ title: str(x.title), summary: str(x.summary), people: arr(x.people).map(str).filter(Boolean), feeling: str(x.feeling) })).filter(x => x.title || x.summary),
       lessons: arr(r.lessons).map(str).filter(Boolean),
     };
-    if (canExp && (s.hasExpedition == null || s.expeditionAuto)) { s.hasExpedition = !!r.expedition; s.expeditionAuto = true; }
+    // Einsätze: Berichte mit Inhalt bleiben; leere, automatisch erkannte werden durch die neue Erkennung ersetzt
+    const keep = opsOf(s).filter(o => Reports.opHasContent(o) || !o.auto);
+    const norm = t => str(t).toLowerCase();
+    arr(r.ops).forEach(o => {
+      const type = Reports.OP_TYPES[o.type] ? o.type : 'mission';
+      const dup = keep.find(k => k.type === type && (norm(k.title) === norm(o.title) || !k.title));
+      const fields = { title: str(o.title), summary: str(o.summary), scenes: arr(o.scenes).map(Number).filter(n => n > 0) };
+      if (dup) { Object.assign(dup, { ...fields, title: dup.title || fields.title }); return; }
+      keep.push({ id: 'op_' + Store.uid(), type, ...fields, missionsRang: /^[DCBAS]$/.test(str(o.rank)) ? str(o.rank) : '', geheimhaltung: 'Intern (Division)', finds: [], wanted: Reports.OP_TYPES[type].def, auto: true });
+    });
+    s.ops = keep;
     // Widersprüche: Rang/Alter/Titel mit Ein-Tipp-Korrektur, alles andere als Rückfrage
     const conf = arr(r.conflicts).filter(c => c && str(c.text));
     const fixable = conf.filter(c => ['rank', 'age', 'title'].includes(c.type) && str(c.value));
@@ -383,24 +402,19 @@
     toast(`${n} Szenen erkannt${q ? ` · ${q} Rückfrage(n)` : ''}${np ? ` · ${np} Personen-Vorschläge` : ''}${marked ? ` · ${marked} bekannte Person(en) markiert` : ''}`);
   }
 
-  // Was erstellt wird: eigene Wahl der Session, sonst passend zur erkannten Expedition
-  function genWhat(s) {
-    if (!canExpedition(s)) return 'diary';
-    if (s.genWhat) return s.genWhat;
-    return s.hasExpedition === true ? 'both' : 'diary';
-  }
-
   async function generateAll(s) {
     if (!AI.available()) throw new Error('Bitte zuerst in den Einstellungen eine KI verbinden.');
-    const what = genWhat(s);
-    const doDiary = what !== 'report', doExp = what !== 'diary';
-    const existing = [doDiary && s.diary.text && 'Tagebuch', doExp && s.expedition.verlauf && 'Expeditionsbericht'].filter(Boolean);
-    if (existing.length && !confirm(`Es gibt schon: ${existing.join(' und ')}. Neu schreiben und ersetzen?`)) return;
     if (!s.analysis || !(s.analysis.scenes || []).length) await analyze(s, true); // immer zweistufig: erst Szenen, dann Text
-    if (doExp && s.hasExpedition !== true) { s.hasExpedition = true; s.expeditionAuto = false; } // ausdrücklich gewünscht
-    await Promise.all([doDiary ? genDiary(s) : null, doExp ? genExpedition(s) : null]);
-    state.tab = doDiary ? 'diary' : 'expedition'; render(); window.scrollTo(0, 0);
-    toast({ diary: 'Tagebuch erstellt ✓', report: 'Expeditionsbericht erstellt ✓', both: 'Tagebuch + Expeditionsbericht erstellt ✓' }[what]);
+    const doDiary = wantDiary(s), ops = opsOf(s).filter(o => o.wanted);
+    const existing = [doDiary && s.diary.text && 'Tagebuch', ...ops.filter(Reports.opHasContent).map(opLabel)].filter(Boolean);
+    if (existing.length && !confirm(`Schon vorhanden: ${existing.join(', ')}.\nNeu schreiben und ersetzen?`)) return;
+    // Tagebuch und Berichte parallel (höchstens 3 gleichzeitig, um das Gratis-Kontingent zu schonen)
+    const jobs = [doDiary ? () => genDiary(s) : null, ...ops.map(op => () => genOp(s, op))].filter(Boolean);
+    const errors = [];
+    for (let i = 0; i < jobs.length; i += 3) await Promise.all(jobs.slice(i, i + 3).map(j => j().catch(e => errors.push(e.message))));
+    state.tab = doDiary ? 'diary' : 'ops'; render(); window.scrollTo(0, 0);
+    if (errors.length) toast(`Teilweise fehlgeschlagen: ${errors[0]}`, 'error');
+    else toast(`${genTitle(s).replace(' schreiben', '')} erstellt ✓`);
   }
 
   function detectedHtml() {
@@ -433,14 +447,16 @@
     s.diary.text = (await AI.complete(Reports.diaryPrompt(s))).replace(/\*\*/g, '').replace(/^#+\s*/gm, '');
     s.diary.updatedAt = Date.now(); Store.save();
   }
-  async function genExpedition(s) {
+  // Bericht zu einem Einsatz schreiben (Vorlage je nach Art)
+  async function genOp(s, op) {
     if (!s.notes.trim()) throw new Error('Bitte zuerst Notizen eintragen.');
-    const r = await AI.completeJSON(Reports.expeditionPrompt(s));
-    const e = s.expedition;
-    [...Reports.EXP_HEAD, ...Reports.EXP_SECTIONS].forEach(f => { if (r[f.key]) e[f.key] = String(r[f.key]); });
-    if (r.ergebnis) e.ergebnis = r.ergebnis;
-    if (Array.isArray(r.finds) && r.finds.length) e.finds = r.finds.map(f => ({ ...f }));
-    if (!e.leitung) e.leitung = (Store.myChar(s.myCharId) || {}).name || '';
+    const t = Reports.opType(op);
+    const r = await AI.completeJSON(Reports.opPrompt(s, op));
+    [...t.head, ...t.sections].forEach(f => { if (r[f.key]) op[f.key] = String(r[f.key]); });
+    if (r.ergebnis) op.ergebnis = r.ergebnis;
+    if (t.finds && Array.isArray(r.finds) && r.finds.length) op.finds = r.finds.map(f => ({ ...f }));
+    if (!op.leitung && t.head.some(f => f.key === 'leitung')) op.leitung = (Store.myChar(s.myCharId) || {}).name || '';
+    op.updatedAt = Date.now();
     Store.save();
   }
 
@@ -505,13 +521,13 @@
   }
 
   /* ---------- KI-Bild zum Tagebuch / Bericht (je eins) ---------- */
-  const imgHolder = (s, kind) => kind === 'diary' ? s.diary : s.expedition;
+  const imgHolder = (s, kind) => kind === 'diary' ? s.diary : (opById(s, kind) || {});
   const imgStyle = h => Reports.IMG_STYLES[h.imageStyle] ? h.imageStyle : 'anime';
   const imgTopic = (s, kind) => { s.imageTopics = s.imageTopics || {}; return (s.imageTopics[kind] = s.imageTopics[kind] || {}); };
 
   function imgSection(s, kind) {
     const h = imgHolder(s, kind), style = imgStyle(h), topic = imgTopic(s, kind), ai = AI.available();
-    const hasText = kind === 'diary' ? !!(s.diary.text || '').trim() : !!(s.expedition.verlauf || s.expedition.auftrag);
+    const hasText = kind === 'diary' ? !!(s.diary.text || '').trim() : Reports.opHasContent(opById(s, kind));
     const scenes = (s.analysis && s.analysis.scenes) || [];
     const refs = Reports.imageRefs(s, kind);
     const canPrompt = hasText && (ai || (topic.text || '').trim() || topic.scene != null);
@@ -603,46 +619,55 @@
   async function imageFile(s, kind) {
     const b = await Images.blobOf(imgHolder(s, kind).imageId);
     if (!b) throw new Error('Bild nicht gefunden.');
-    const name = `${(s.title || 'zenkai').replace(/[^\wäöüß-]+/gi, '_')}_${kind === 'diary' ? 'tagebuch' : 'expedition'}.jpg`;
+    const name = `${(s.title || 'zenkai').replace(/[^\wäöüß-]+/gi, '_')}_${kind === 'diary' ? 'tagebuch' : (opById(s, kind) || {}).type || 'bericht'}.jpg`;
     return new File([b], name, { type: b.type || 'image/jpeg' });
   }
 
-  function tabExpedition(s, el) {
-    const e = s.expedition;
+  /* ---------- Tab „Einsätze“: ein Bericht pro Einsatz, Vorlage je nach Art ---------- */
+  function opForm(s, op) {
+    const t = Reports.opType(op), id = op.id, ai = AI.available();
     const field = f => f.type === 'select'
-      ? `<label>${esc(f.label)}<select data-e="${f.key}">${opts(f.options, e[f.key], '–')}</select></label>`
-      : `<label>${esc(f.label)}<input data-e="${f.key}" value="${esc(e[f.key])}" placeholder="${esc(f.ph || '')}"></label>`;
+      ? `<label>${esc(f.label)}<select data-op="${id}" data-e="${f.key}">${opts(f.options, op[f.key], '–')}</select></label>`
+      : `<label>${esc(f.label)}<input data-op="${id}" data-e="${f.key}" value="${esc(op[f.key])}" placeholder="${esc(f.ph || '')}"></label>`;
     const status = v => (v || '').trim() ? `✓ ${words(v)} Wörter` : 'leer';
-    const area = f => sub(`exp-${f.key}`, esc(f.label), f.key === 'bewertung' ? [e.ergebnis, (e.bewertung || '').trim() && words(e.bewertung) + ' Wörter'].filter(Boolean).join(' · ') || 'offen' : status(e[f.key]),
-      `${f.key === 'bewertung' ? `<select data-e="ergebnis">${opts(Reports.RESULT, e.ergebnis, '– Ergebnis wählen –')}</select>` : ''}<div class="row-between"><span class="muted small">${esc(f.hint)}</span>${micBtn('e-' + f.key)}</div>
-      <textarea id="e-${f.key}" data-e="${f.key}" rows="${f.key === 'verlauf' ? 7 : 4}" placeholder="${esc(f.hint)}">${esc(e[f.key])}</textarea>`);
-    const S = Reports.EXP_SECTIONS;
-    const headFilled = Reports.EXP_HEAD.filter(f => e[f.key]).length;
-    const finds = (e.finds || []);
+    const area = f => sub(`op-${id}-${f.key}`, esc(f.label), f.key === 'bewertung' ? [op.ergebnis, (op.bewertung || '').trim() && words(op.bewertung) + ' Wörter'].filter(Boolean).join(' · ') || 'offen' : status(op[f.key]),
+      `${f.key === 'bewertung' ? `<select data-op="${id}" data-e="ergebnis">${opts(Reports.RESULT, op.ergebnis, '– Ergebnis wählen –')}</select>` : ''}<div class="row-between"><span class="muted small">${esc(f.hint)}</span>${micBtn(`e-${id}-${f.key}`)}</div>
+      <textarea id="e-${id}-${f.key}" data-op="${id}" data-e="${f.key}" rows="${f.key === 'verlauf' ? 7 : 4}" placeholder="${esc(f.hint)}">${esc(op[f.key])}</textarea>`);
+    const finds = op.finds || [];
+    const findsSub = t.finds ? sub(`op-${id}-finds`, 'Funde & Artefakte', finds.length ? `✓ ${finds.length} Fund(e)` : 'keine', `<div class="row-between"><span></span><button class="btn ghost small" data-act="add-find" data-op="${id}">＋ Fund</button></div>
+      ${finds.length ? finds.map((f, i) => `<div class="find">
+        <div class="find-head"><strong>F-${String(i + 1).padStart(2, '0')}</strong><button class="btn ghost small danger" data-del-find="${i}" data-op="${id}">✕</button></div>
+        <div class="grid2">${Reports.FIND_COLS.map(c => `<label>${c.label}<input data-op="${id}" data-find="${i}" data-k="${c.key}" value="${esc(f[c.key])}"></label>`).join('')}</div></div>`).join('')
+      : '<p class="muted small">Noch keine Funde eingetragen.</p>'}`) : '';
+    const headFilled = t.head.filter(f => op[f.key]).length;
+    return `<div class="op-tools row-between">
+        <div class="row"><select data-op-type="${id}">${typeOptions(op.type)}</select><input data-op-field="${id}" data-k="title" value="${esc(op.title || '')}" placeholder="Titel des Einsatzes"></div>
+        <div class="btns">${ai ? `<button class="btn small" data-op-gen="${id}">✨ ${Reports.opHasContent(op) ? 'Neu schreiben' : 'Bericht schreiben lassen'}</button>` : ''}
+          <button class="btn ghost small danger" data-op-del="${id}">Löschen</button></div></div>
+      ${sub(`op-${id}-head`, '🗂 Kopfdaten', `${headFilled}/${t.head.length} ausgefüllt`, `<div class="grid2">${t.head.map(field).join('')}</div>
+        ${t.sections.some(f => f.key === 'teilnehmer') ? `<div class="row-between"><span></span><button class="btn ghost small" data-act="fill-team" data-op="${id}">Teilnehmer aus Session übernehmen</button></div>` : ''}`)}
+      ${t.sections.map(f => area(f) + (t.finds && f.key === t.findsAfter ? findsSub : '')).join('')}
+      ${imgSection(s, id)}`;
+  }
+
+  function tabOps(s, el) {
+    const ops = opsOf(s);
     el.innerHTML = `
-      <div class="panel report" id="exp-panel">
-        <div class="row-between"><h3>📜 Expeditionsbericht · Archäologie-Division</h3>
-          <div class="btns">${allToggle('exp-panel')}${AI.available() ? '<button class="btn small" data-act="gen-exp">✨ Aus Erzählung ausfüllen</button>' : ''}</div></div>
-        ${sub('exp-head', '🗂 Kopfdaten', `${headFilled}/${Reports.EXP_HEAD.length} ausgefüllt`, `<div class="grid2">${Reports.EXP_HEAD.map(field).join('')}</div>
-          <div class="row-between"><span></span><button class="btn ghost small" data-act="fill-team">Teilnehmer aus Session übernehmen</button></div>`, true)}
-        ${S.slice(0, 4).map(area).join('')}
-        ${sub('exp-finds', '4. Funde & Artefakte', finds.length ? `✓ ${finds.length} Fund(e)` : 'keine', `<div class="row-between"><span></span><button class="btn ghost small" data-act="add-find">＋ Fund</button></div>
-          ${finds.length ? finds.map((f, i) => `<div class="find">
-            <div class="find-head"><strong>F-${String(i + 1).padStart(2, '0')}</strong><button class="btn ghost small danger" data-del-find="${i}">✕</button></div>
-            <div class="grid2">${Reports.FIND_COLS.map(c => `<label>${c.label}<input data-find="${i}" data-k="${c.key}" value="${esc(f[c.key])}"></label>`).join('')}</div></div>`).join('')
-        : '<p class="muted small">Noch keine Funde eingetragen.</p>'}`)}
-        ${S.slice(4, 6).map(area).join('')}
-        ${S.slice(6).map(area).join('')}
-        ${imgSection(s, 'expedition')}
+      <div class="panel report" id="ops-panel">
+        <div class="row-between"><h3>📜 Einsätze & Berichte</h3><div class="btns">${ops.length ? allToggle('ops-panel') : ''}</div></div>
+        <p class="muted small">Jeder Einsatz im Monat (Mission, Expedition, Ausgrabung, Kampf, Training, Eskorte) bekommt einen eigenen Bericht nach passender Vorlage.</p>
+        ${ops.map(op => sub(`op-${op.id}`, esc(opLabel(op)), Reports.opHasContent(op) ? `✓ ${Reports.opType(op).report}` : 'noch leer', opForm(s, op), ops.length === 1)).join('')}
+        ${!ops.length ? '<div class="empty">Noch keine Einsätze. Zenkai erkennt sie bei der Analyse im Schritt „Erzählen“ – oder füge sie hier hinzu.</div>' : ''}
+        <div class="row" style="margin-top:12px"><select id="op-new-type">${typeOptions('mission')}</select><button class="btn ghost small" data-act="op-add">＋ Einsatz hinzufügen</button></div>
       </div>`;
   }
 
   function tabExport(s, el) {
-    const exp = needsExpedition(s);
     const block = (id, title, text) => `<div class="panel"><div class="row-between"><h3>${title}</h3>
       <div class="btns"><button class="btn small" data-copy="${id}">📋 Kopieren</button><button class="btn ghost small" data-share="${id}">Teilen</button><button class="btn ghost small" data-dl="${id}">.txt</button></div></div>
       <pre class="out" id="out-${id}">${esc(text)}</pre></div>`;
-    el.innerHTML = block('diary', '📖 Tagebuch', Reports.diaryText(s)) + (exp ? block('exp', '📜 Expeditionsbericht', Reports.expeditionText(s)) : '');
+    el.innerHTML = block('diary', '📖 Tagebuch', Reports.diaryText(s)) +
+      opsOf(s).filter(Reports.opHasContent).map(op => block(op.id, `📜 ${esc(Reports.opType(op).report)}${op.title ? ' – ' + esc(op.title) : ''}`, Reports.opText(s, op))).join('');
   }
 
   /* ---------- Verzeichnis ---------- */
@@ -823,7 +848,7 @@
   function viewMyChars() {
     app.innerHTML = `
       <div class="head"><h1>Meine Charaktere</h1><button class="btn primary" data-act="add-mychar">＋ Charakter</button></div>
-      <p class="muted">Die Charaktere, die du selbst spielst. Gehört einer davon einer Division mit Berichtspflicht an (${esc(D().settings.expeditionDivisions.join(', '))}), wird automatisch ein Expeditionsbericht angelegt.</p>
+      <p class="muted">Die Charaktere, die du selbst spielst. Rang und Alter kannst du pro Session anpassen – so stimmen auch ältere Einträge.</p>
       ${D().myChars.length ? `<div class="cards">${D().myChars.map(c => `<button class="card" data-mychar="${c.id}">
         <span class="who">${avatar(c.imageId, c.name, 'mid')}<strong>${esc(c.name)}</strong>${c.age ? `<span class="muted small">${esc(c.age)} Jahre</span>` : ''}</span>
         <div class="tags">${[c.rank, c.village, c.division && c.division !== 'Keine' ? '⚑ ' + c.division : '', c.clan ? 'Clan ' + c.clan : ''].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
@@ -899,8 +924,7 @@
         <p class="muted small">Ein Eintrag pro Zeile. Passe sie an euer RP an.</p><div class="grid3">
         <label>Ränge<textarea data-list="ranks" rows="8">${esc(L().ranks.join('\n'))}</textarea></label>
         <label>Dörfer<textarea data-list="villages" rows="8">${esc(L().villages.join('\n'))}</textarea></label>
-        <label>Divisionen<textarea data-list="divisions" rows="8">${esc(L().divisions.join('\n'))}</textarea></label></div>
-        <label>Divisionen mit Expeditionsbericht <span class="muted small">(kommagetrennt)</span><input data-set="expeditionDivisions" value="${esc(s.expeditionDivisions.join(', '))}"></label>`)}
+        <label>Divisionen<textarea data-list="divisions" rows="8">${esc(L().divisions.join('\n'))}</textarea></label></div>`)}
       ${syncPanel()}
       ${fold('data', '💾 Daten & Sicherung', '', `
         <p class="muted small">${Sync.loggedIn() ? 'Deine Daten werden automatisch mit deinen anderen Geräten abgeglichen. Eine Sicherungsdatei schadet trotzdem nicht.' : 'Ohne Sync liegen die Daten nur auf diesem Gerät. Mit einer Sicherung kannst du sie manuell auf ein anderes Gerät übertragen.'}</p>
@@ -1018,12 +1042,18 @@
       return toast(d.confChar !== undefined ? 'Session und Charakter angepasst' : 'Für diese Session übernommen');
     }
     if (d.confSkip !== undefined) { s.conflicts.splice(d.confSkip, 1); Store.save(); return render(); }
-    if (d.expSet) {
-      if (d.expSet === 'auto') { s.hasExpedition = null; s.expeditionAuto = false; }
-      else { s.hasExpedition = d.expSet === 'yes'; s.expeditionAuto = false; }
-      s.genWhat = null; Store.save(); return render();
+    if (d.genDiary) { s.genDiary = !wantDiary(s); Store.save(); return render(); }
+    if (d.opWant) { const op = opById(s, d.opWant); if (op) { op.wanted = !op.wanted; Store.save(); } return render(); }
+    if (d.opDel) {
+      const op = opById(s, d.opDel);
+      if (op && (!Reports.opHasContent(op) || confirm(`„${opLabel(op)}“ samt Bericht löschen?`))) { if (op.imageId) Images.remove(op.imageId); s.ops = opsOf(s).filter(o => o.id !== op.id); Store.save(); render(); }
+      return;
     }
-    if (d.genWhat) { s.genWhat = d.genWhat; Store.save(); return render(); }
+    if (d.opGen) {
+      const op = opById(s, d.opGen);
+      if (op && Reports.opHasContent(op) && !confirm('Vorhandenen Bericht mit KI-Text überschreiben?')) return;
+      return busy(t, async () => { if (!s.analysis || !(s.analysis.scenes || []).length) await analyze(s, true); await genOp(s, opById(s, d.opGen)); render(); toast('Bericht erstellt ✓'); });
+    }
     if (d.sceneDel !== undefined) { s.analysis.scenes.splice(d.sceneDel, 1); Store.save(); return render(); }
     if (d.refine) return busy(t, () => refine(s, d.refine));
     if (d.imgStyle) { const [k, st] = d.imgStyle.split(':'); imgHolder(s, k).imageStyle = st; Store.save(); return render(); }
@@ -1045,10 +1075,10 @@
       if (navigator.canShare && navigator.canShare({ files: [f] })) { try { await navigator.share({ files: [f], title: s.title || 'Zenkai' }); } catch (e) { } }
       else { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); }
     }).catch(e => toast(e.message, 'error'));
-    if (d.delFind !== undefined) { s.expedition.finds.splice(d.delFind, 1); Store.save(); return render(); }
+    if (d.delFind !== undefined) { const op = opById(s, d.op); if (op) { op.finds.splice(d.delFind, 1); Store.save(); } return render(); }
     if (d.copy) return copy($('#out-' + d.copy).textContent);
     if (d.share) return share('Bericht', $('#out-' + d.share).textContent);
-    if (d.dl) return download(`${(s.title || 'bericht').replace(/[^\wäöüß-]+/gi, '_')}_${d.dl === 'exp' ? 'expedition' : 'tagebuch'}.txt`, $('#out-' + d.dl).textContent);
+    if (d.dl) return download(`${(s.title || 'bericht').replace(/[^\wäöüß-]+/gi, '_')}_${d.dl === 'diary' ? 'tagebuch' : ((opById(s, d.dl) || {}).type || 'bericht')}.txt`, $('#out-' + d.dl).textContent);
 
     switch (d.act) {
       case 'close': return closeModal();
@@ -1110,17 +1140,20 @@
         if (s.diary.text && !confirm('Vorhandenen Text ersetzen?')) return;
         await genDiary(s); render();
       });
-      case 'gen-exp': return busy(t, async () => {
-        if (s.expedition.verlauf && !confirm('Vorhandene Felder mit KI-Text überschreiben?')) return;
-        await genExpedition(s); render(); toast('Bericht ausgefüllt');
-      });
       case 'refine-own': { const v = $('#refine-own').value.trim(); if (v) return busy(t, () => refine(s, v)); return; }
       case 'fill-team': {
+        const op = opById(s, d.op); if (!op) return;
         const me = Store.myChar(s.myCharId);
-        const rows = [me, ...s.participants.map(Store.person)].filter(Boolean).map(p => [p.name, p.rank, p.village].filter(Boolean).join(' – '));
-        s.expedition.teilnehmer = rows.join('\n'); Store.save(); return render();
+        const rows = [me && { ...me, rank: Reports.rankOf(s) }, ...s.participants.map(Store.person)].filter(Boolean).map(p => [p.name, p.rank, p.village].filter(Boolean).join(' – '));
+        op.teilnehmer = rows.join('\n'); Store.save(); return render();
       }
-      case 'add-find': s.expedition.finds = s.expedition.finds || []; s.expedition.finds.push({}); Store.save(); return render();
+      case 'add-find': { const op = opById(s, d.op); if (op) { op.finds = op.finds || []; op.finds.push({}); Store.save(); } return render(); }
+      case 'op-add': {
+        const type = ($('#op-new-type') || {}).value || 'mission';
+        const op = { id: 'op_' + Store.uid(), type, title: '', geheimhaltung: 'Intern (Division)', finds: [], wanted: true };
+        opsOf(s).push(op); Store.save(); render();
+        return toast(`${Reports.OP_TYPES[type].label} hinzugefügt`);
+      }
       case 'test-ai': return busy(t, async () => toast('✓ ' + await AI.test()));
       case 'backup': return download(`zenkai-sicherung-${today()}.json`, Store.exportJSON(), 'application/json');
       case 'reset':
@@ -1166,8 +1199,10 @@
       return;
     }
     if (d.diary !== undefined) { s.diary.text = el.value; s.diary.updatedAt = Date.now(); return Store.saveSoon(); }
-    if (d.e) { s.expedition[d.e] = el.value; return Store.saveSoon(); }
-    if (d.find !== undefined) { s.expedition.finds[d.find][d.k] = el.value; return Store.saveSoon(); }
+    if (d.e) { const op = opById(s, d.op); if (op) { op[d.e] = el.value; Store.saveSoon(); } return; }
+    if (d.find !== undefined) { const op = opById(s, d.op); if (op) { op.finds[d.find][d.k] = el.value; Store.saveSoon(); } return; }
+    if (d.opField) { const op = opById(s, d.opField); if (op) { op[d.k] = el.value; op.auto = false; Store.saveSoon(); } return; }
+    if (d.opType) { const op = opById(s, d.opType); if (op) { op.type = el.value; op.auto = false; Store.save(); render(); } return; }
     if (d.set) {
       const st = D().settings;
       if (el.type === 'checkbox') {

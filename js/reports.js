@@ -38,6 +38,80 @@ const Reports = (() => {
 
   const emptyExpedition = () => ({ geheimhaltung: 'Intern (Division)', ergebnis: '', finds: [] });
 
+  /* ---------- Einsatz-Arten: jede mit eigener Berichtsvorlage ----------
+     head = Kopffelder, sections = Abschnitte (key 'bewertung' bekommt die Ergebnis-Auswahl),
+     finds = Fundliste nach dem Abschnitt findsAfter, def = beim Schreiben vorausgewählt */
+  const H = {
+    nr: ph => ({ key: 'berichtNr', label: 'Berichtsnummer', type: 'text', ph }),
+    secrecy: { key: 'geheimhaltung', label: 'Geheimhaltungsstufe', type: 'select', options: SECRECY },
+    rank: { key: 'missionsRang', label: 'Missionsrang', type: 'select', options: MISSION_RANKS },
+    client: ph => ({ key: 'auftraggeber', label: 'Auftraggeber', type: 'text', ph }),
+    lead: label => ({ key: 'leitung', label, type: 'text' }),
+    time: { key: 'zeitraum', label: 'Zeitraum (Ingame)', type: 'text', ph: 'z. B. 3 Tage' },
+    place: label => ({ key: 'einsatzgebiet', label, type: 'text', ph: 'Land, Region, Ort' }),
+  };
+  const TEAM = { key: 'teilnehmer', label: 'Teilnehmer', hint: 'Name – Rang – Dorf – Funktion im Team' };
+  const OP_TYPES = {
+    mission: {
+      label: 'Mission', icon: '🗡️', report: 'Missionsbericht', def: true,
+      head: [H.nr('z. B. MIS-2026-031'), H.secrecy, H.rank, H.client('z. B. Missionsbüro, Händler aus Tanzaku'), H.lead('Teamleitung / Sensei'), H.time, H.place('Einsatzort')],
+      sections: [TEAM,
+        { key: 'auftrag', label: '1. Auftrag', hint: 'Was war der Auftrag? Von wem, warum?' },
+        { key: 'verlauf', label: '2. Verlauf', hint: 'Chronologisch: Aufbruch, Weg, Ausführung, Rückkehr' },
+        { key: 'vorkommnisse', label: '3. Besondere Vorkommnisse', hint: 'Feindkontakt, Kämpfe, Verletzungen, Probleme, Entdeckungen' },
+        { key: 'bewertung', label: '4. Ergebnis & Bewertung', hint: 'Auftrag erfüllt? Was ist offen?' },
+        { key: 'belohnung', label: '5. Bezahlung / Belohnung', hint: 'Ryo, Gegenstände, Anerkennung' },
+        { key: 'empfehlungen', label: '6. Empfehlungen', hint: 'Folgeauftrag, Warnungen, Hinweise ans Dorf' }],
+    },
+    expedition: { label: 'Expedition', icon: '🧭', report: 'Expeditionsbericht', def: true, head: EXP_HEAD, sections: EXP_SECTIONS, finds: true, findsAfter: 'fundstaette' },
+    excavation: {
+      label: 'Ausgrabung', icon: '⛏️', report: 'Grabungsbericht', def: true,
+      head: [H.nr('z. B. GRA-2026-004'), H.secrecy, H.client('z. B. Archäologie-Division'), H.lead('Grabungsleitung'), H.time, H.place('Grabungsstätte')],
+      sections: [TEAM,
+        { key: 'auftrag', label: '1. Ziel der Grabung', hint: 'Was sollte freigelegt oder geborgen werden?' },
+        { key: 'fundstaette', label: '2. Grabungsstätte', hint: 'Lage, Schichten, Bauweise, Zustand, Siegel, Fallen' },
+        { key: 'verlauf', label: '3. Grabungsverlauf', hint: 'Methoden, Tage, Abschnitte, Schwierigkeiten' },
+        { key: 'erkenntnisse', label: '5. Erkenntnisse', hint: 'Datierung, Inschriften, Fuinjutsu, historische Einordnung' },
+        { key: 'vorkommnisse', label: '6. Vorkommnisse & Gefahren', hint: 'Einstürze, Fallen, Feindkontakt, Verletzungen' },
+        { key: 'bewertung', label: '7. Ergebnis & Bewertung', hint: 'Ziel erreicht? Was bleibt zu tun?' },
+        { key: 'empfehlungen', label: '8. Sicherung & weiteres Vorgehen', hint: 'Absperrung, Folgegrabung, Analyse der Funde' }],
+      finds: true, findsAfter: 'verlauf',
+    },
+    battle: {
+      label: 'Kampf / Krieg', icon: '⚔️', report: 'Kampfbericht', def: true,
+      head: [H.nr('z. B. KMP-2026-012'), H.secrecy, H.lead('Befehlshaber / Teamleitung'), H.time, H.place('Ort des Kampfes')],
+      sections: [
+        { key: 'teilnehmer', label: 'Eigene Kräfte', hint: 'Name – Rang – Dorf – Rolle' },
+        { key: 'gegner', label: 'Gegner', hint: 'Wer? Anzahl, Rang, Dorf, Fähigkeiten, Jutsu' },
+        { key: 'anlass', label: '1. Anlass', hint: 'Wie kam es zum Kampf?' },
+        { key: 'verlauf', label: '2. Verlauf', hint: 'Chronologisch, eingesetzte Jutsu und Taktik' },
+        { key: 'verluste', label: '3. Verletzungen & Verluste', hint: 'Eigene und gegnerische' },
+        { key: 'bewertung', label: '4. Ausgang & Bewertung', hint: 'Sieg, Rückzug, Unentschieden – Folgen' },
+        { key: 'empfehlungen', label: '5. Lehren & Empfehlungen', hint: 'Was lernen wir daraus?' }],
+    },
+    training: {
+      label: 'Training', icon: '🥋', report: 'Trainingsbericht', def: false,
+      head: [H.lead('Trainer / Sensei'), H.time, H.place('Trainingsort')],
+      sections: [TEAM,
+        { key: 'auftrag', label: '1. Trainingsziel', hint: 'Welches Jutsu, welche Fähigkeit?' },
+        { key: 'verlauf', label: '2. Übungen & Verlauf', hint: 'Was wurde wie geübt? Fingerzeichen, Methoden' },
+        { key: 'bewertung', label: '3. Fortschritt', hint: 'Was klappt schon, was noch nicht?' },
+        { key: 'empfehlungen', label: '4. Nächste Schritte', hint: 'Weiteres Training, Ziele' }],
+    },
+    escort: {
+      label: 'Eskorte', icon: '🛡️', report: 'Eskortebericht', def: true,
+      head: [H.nr('z. B. ESK-2026-007'), H.secrecy, H.rank, H.client('Schutzperson / Auftraggeber'), H.lead('Teamleitung'), H.time, H.place('Route (von – nach)')],
+      sections: [TEAM,
+        { key: 'auftrag', label: '1. Auftrag & Schutzperson', hint: 'Wer wurde wohin begleitet, warum?' },
+        { key: 'verlauf', label: '2. Reiseverlauf', hint: 'Route, Etappen, Lager' },
+        { key: 'vorkommnisse', label: '3. Vorkommnisse', hint: 'Überfälle, Gefahren, Verletzungen' },
+        { key: 'bewertung', label: '4. Ergebnis & Bewertung', hint: 'Sicher angekommen? Probleme?' },
+        { key: 'belohnung', label: '5. Bezahlung / Belohnung', hint: 'Ryo, Gegenstände' }],
+    },
+  };
+  const opType = op => OP_TYPES[op && op.type] || OP_TYPES.mission;
+  const opHasContent = op => !!op && (opType(op).sections.some(f => (op[f.key] || '').trim()) || (op.finds || []).length > 0);
+
   /* ---------- Kontext für die KI ---------- */
   function charLine(c) {
     if (!c) return '';
@@ -78,19 +152,20 @@ const Reports = (() => {
   }
 
   /* Schritt 1: Analyse – Szenen, Widersprüche, Expedition ja/nein, Rückfragen, Personen und Berufe */
-  function analyzePrompt(session, expeditionPossible) {
+  function analyzePrompt(session) {
+    const types = Object.entries(OP_TYPES).map(([k, t]) => `${k} (${t.label})`).join(', ');
     const L = Store.data.settings.lists;
     const known = Store.data.people.map(p => `${p.name}${p.profession ? ' (' + p.profession + ')' : ''}${p.rank ? ' [' + p.rank + ']' : ''}`).join('; ') || '(keine)';
     const me = Store.myChar(session.myCharId);
     return {
-      system: 'Du analysierst die Erzählung eines Rollenspielers im Naruto-Universum nach einer Spielsession, damit daraus später ein Tagebuch' +
-        (expeditionPossible ? ' und ggf. ein Expeditionsbericht' : '') + ' entsteht. Die Erzählung ist oft per Sprache diktiert (Tippfehler bei Namen möglich). ' +
+      system: 'Du analysierst die Erzählung eines Rollenspielers im Naruto-Universum. Eine Spielsession entspricht einem Ingame-MONAT. ' +
+        'Daraus entstehen ein Tagebuch über den ganzen Monat und für jeden Einsatz im Monat ein eigener Bericht. Die Erzählung ist oft per Sprache diktiert (Tippfehler bei Namen möglich). ' +
         'Sei gründlich und genau. Antworte nur mit JSON.',
       user: context(session, false) +
         `\nBEKANNTE PERSONEN IM VERZEICHNIS: ${known}\nEIGENER CHARAKTER (nicht als Person aufführen): ${me ? me.name : '-'}\n` +
         `\nAUFGABE: Antworte als JSON:\n{\n` +
         ` "scenes": [{"title": "Überschrift, 2–5 Wörter", "summary": "was passierte – MIT Grund (warum) und Ergebnis/Folge, 1–3 Sätze", "people": ["Namen"], "feeling": "Gefühl des Charakters dabei, falls erwähnt, sonst \\"\\""}],\n` +
-        (expeditionPossible ? ` "expedition": true oder false,\n` : '') +
+        ` "ops": [{"type": "Art", "title": "kurzer Titel", "rank": "D|C|B|A|S oder \\"\\"", "scenes": [Nummern der zugehörigen Szenen, ab 1], "summary": "1 Satz"}],\n` +
         ` "conflicts": [{"type": "rank|age|title|other", "text": "kurze Frage in Du-Form", "value": "Wert, der laut Erzählung stimmt"}],\n` +
         ` "questions": [{"q": "Frage in Du-Form", "why": "wofür"}],\n` +
         ` "newPeople": [{"firstName": "", "lastName": "", "rank": "", "village": "", "division": "", "clan": "", "profession": "", "note": ""}],\n` +
@@ -100,7 +175,11 @@ const Reports = (() => {
         `- scenes: streng chronologisch; jede eigenständige Begebenheit (Ort- oder Personenwechsel, neues Vorhaben) ist eine eigene Szene; nichts zusammenlegen, nichts weglassen; Ursache und Folge festhalten (z. B. "schickt ihn ins Missionsbüro, um sich der Materialsammlung anzuschließen").\n` +
         `- GENAUIGKEIT: Begründungen ("weil", "deshalb") NUR, wenn sie so in der Erzählung stehen – nie selbst eine Ursache erfinden oder zwei Fakten falsch verknüpfen. Wer etwas getan hat, genau so wiedergeben, wie erzählt (z. B. "Ich habe Jinsei geschrieben, als ich Genin wurde; er antwortete viel später – er ist selbst noch kein Genin").\n` +
         `- Versprechen, Abmachungen, Gegenleistungen, Geldgeber, Ratschläge und neue Freundschaften immer mit Inhalt festhalten (z. B. "leiht ihm das Geld gegen das Versprechen, ein großer Ninja zu werden"; "sein Cousin hat ihm das Geld geliehen").\n` +
-        (expeditionPossible ? `- expedition: nur true, wenn in der Session tatsächlich eine archäologische Expedition, Erkundung, Ausgrabung oder Bergung stattfand. Training, Alltag oder eine normale Mission sind KEINE Expedition.\n` : '') +
+        `- ops: alle EINSÄTZE des Monats, jeder einzeln (zwei Missionen = zwei Einträge). Erlaubte type-Werte: ${types}. ` +
+        `mission = offizieller Auftrag (z. B. aus dem Missionsbüro); expedition = Erkundungsreise; excavation = Ausgrabung/Bergung an einer Fundstelle; battle = Kampf oder Krieg; ` +
+        `training = JEDE Unterrichtseinheit oder Übung bei einem Sensei/Ausbilder (z. B. ein Jutsu beigebracht bekommen, Schwertunterricht) – jede einzeln; escort = Begleitschutz. ` +
+        `Alltag, Einkäufe, Gespräche, Besuche sind KEINE Einsätze. Leere Liste, wenn es keine gab.\n` +
+        `- ops.title: beschreibt, was der Auftrag bzw. das Training TATSÄCHLICH war (laut Erzählung) – nicht raten, keine Begriffe erfinden. ops.scenes: ALLE Szenen, die dazugehören (Vorbereitung wie Team zusammenstellen, Durchführung, Rückkehr).\n` +
         `- conflicts: Widersprüche zwischen den Charakter-/Session-Daten (Rang, Alter, Titel) und der Erzählung, z. B. Rang "Chunin", aber Erzählung "als ich Genin wurde" oder Titel "Monat", Erzählung "Tag". Die Session kann in der Vergangenheit liegen – der Charakter hatte damals evtl. einen niedrigeren Rang. value = der Wert, der laut Erzählung ZUM ZEITPUNKT DER SESSION galt (im Beispiel "Genin"), beim Titel ein korrigierter Titel. Leere Liste, wenn keine. Für rank nutze: ${L.ranks.join(', ')}.\n` +
         `- questions: höchstens 4 wirklich wichtige fehlende oder unklare Informationen; nichts fragen, was beantwortet ist (auch nicht in den bisherigen Nachfragen).\n` +
         `- newPeople: alle namentlich genannten Personen, die NICHT im Verzeichnis stehen. Vor- und Nachname trennen (nur einer bekannt → anderer ""). Beschreibungen wie "Sensei mit den blauen Haaren" nur, wenn ein Name genannt wird. profession = Beruf/Funktion, falls erkennbar (z. B. Schmied, Händler, Sensei/Ausbilder, Medic, Missionsbüro). Für rank/village/division nutze möglichst: ${L.ranks.join(', ')} / ${L.villages.join(', ')} / ${L.divisions.join(', ')}. note = ein Satz, wie die Person vorkam.\n` +
@@ -176,19 +255,26 @@ const Reports = (() => {
     };
   }
 
-  function expeditionPrompt(session) {
-    const keys = [...EXP_HEAD, ...EXP_SECTIONS].map(f => f.key);
+  /* Bericht zu EINEM Einsatz des Monats */
+  function opPrompt(session, op) {
+    const t = opType(op);
+    const keys = [...t.head, ...t.sections].map(f => f.key);
+    const scenes = (session.analysis && session.analysis.scenes) || [];
+    const mine = (op.scenes || []).map(n => scenes[n - 1]).filter(Boolean);
     return {
-      system: 'Du bist Schreibassistent der Archäologie-Division eines Shinobi-Dorfes im Naruto-Universum. ' +
-        'Du verfasst sachliche, präzise Expeditionsberichte in der dritten Person bzw. im Berichtsstil auf Deutsch. ' +
+      system: `Du verfasst im Naruto-Universum einen sachlichen, präzisen ${t.report} im Berichtsstil (dritte Person) auf Deutsch. ` +
         creativityRule() + ' Wenn zu einem Feld keine Information vorliegt, gib einen leeren String zurück.',
       user: context(session) +
-        `\nAUFGABE: Erstelle daraus einen Expeditionsbericht. Antworte ausschließlich mit einem JSON-Objekt mit den Schlüsseln: ${keys.join(', ')}, ergebnis, finds.\n` +
-        `- geheimhaltung: einer von ${JSON.stringify(SECRECY)}\n- missionsRang: einer von ${JSON.stringify(MISSION_RANKS)} oder ""\n` +
+        `\nEINSATZ, ZU DEM DER BERICHT GEHÖRT: ${t.label} – ${op.title || ''}${op.summary ? ' (' + op.summary + ')' : ''}\n` +
+        (mine.length ? `ZUGEHÖRIGE SZENEN:\n${mine.map(x => `- ${x.title}: ${x.summary}`).join('\n')}\n` : '') +
+        `WICHTIG: Berichte NUR über diesen Einsatz, nicht über andere Ereignisse des Monats.\n` +
+        `\nAUFGABE: Antworte ausschließlich mit einem JSON-Objekt mit den Schlüsseln: ${keys.join(', ')}, ergebnis${t.finds ? ', finds' : ''}.\n` +
+        (keys.includes('geheimhaltung') ? `- geheimhaltung: einer von ${JSON.stringify(SECRECY)}\n` : '') +
+        (keys.includes('missionsRang') ? `- missionsRang: einer von ${JSON.stringify(MISSION_RANKS)} oder ""\n` : '') +
         `- ergebnis: einer von ${JSON.stringify(RESULT)} oder ""\n` +
-        '- teilnehmer: eine Zeile pro Person "Name – Rang – Dorf – Funktion"\n' +
-        '- finds: Array von Objekten {bezeichnung, beschreibung, fundort, zustand, verbleib}\n' +
-        '- Alle übrigen Felder: Text (Absätze mit \\n getrennt).',
+        (keys.includes('teilnehmer') ? '- teilnehmer: eine Zeile pro Person "Name – Rang – Dorf – Funktion"\n' : '') +
+        (t.finds ? '- finds: Array von Objekten {bezeichnung, beschreibung, fundort, zustand, verbleib}\n' : '') +
+        '- Alle übrigen Felder: Text (Absätze mit \\n getrennt). Chronologisch, Ursache und Folge nur wie erzählt.',
     };
   }
 
@@ -204,7 +290,8 @@ const Reports = (() => {
   function imagePrompt(session, kind, style) {
     const me = Store.myChar(session.myCharId);
     const age = ageOf(session), rank = rankOf(session);
-    const text = kind === 'diary' ? (session.diary && session.diary.text) : expeditionText(session);
+    const op = kind === 'diary' ? null : (session.ops || []).find(o => o.id === kind);
+    const text = op ? opText(session, op) : (session.diary && session.diary.text);
     const topic = imageTopic(session, kind);
     const cast = imageCast(session, topic.scene);
     const describe = (c, isMe) => {
@@ -277,36 +364,36 @@ const Reports = (() => {
     return `📖 Tagebuch – ${me ? me.name : ''}\n${session.ingameDate ? session.ingameDate + '\n' : ''}\n${(session.diary && session.diary.text) || ''}`.trim();
   }
 
-  function expeditionText(session) {
-    const e = session.expedition || {};
-    const L = [];
-    L.push('📜 EXPEDITIONSBERICHT – ARCHÄOLOGIE-DIVISION');
+  // Textexport eines Einsatz-Berichts (für alle Arten gleich aufgebaut)
+  function opText(session, op) {
+    const t = opType(op), L = [];
+    L.push(`📜 ${t.report.toUpperCase()}${op.title ? ' – ' + op.title : ''}`);
     L.push('════════════════════════════════');
-    EXP_HEAD.forEach(f => { if (e[f.key]) L.push(`${f.label}: ${e[f.key]}`); });
+    t.head.forEach(f => { if (op[f.key]) L.push(`${f.label}: ${op[f.key]}`); });
     const me = Store.myChar(session.myCharId);
     L.push(`Verfasser: ${charLine(me ? { ...me, rank: rankOf(session), age: '' } : null)}`);
+    if (session.ingameDate) L.push(`Ingame-Monat: ${session.ingameDate}`);
     L.push(`Datum (real): ${session.date || ''}`);
-    const sec = (f) => { if (e[f.key]) { L.push(''); L.push(f.label.toUpperCase()); L.push(e[f.key]); } };
-    EXP_SECTIONS.slice(0, 4).forEach(sec);
-    const finds = (e.finds || []).filter(f => FIND_COLS.some(c => f[c.key]));
-    L.push(''); L.push('4. FUNDE & ARTEFAKTE');
-    if (!finds.length) L.push('Keine Funde.');
-    finds.forEach((f, i) => {
-      L.push(`[F-${String(i + 1).padStart(2, '0')}] ${f.bezeichnung || 'Unbenannt'}`);
-      FIND_COLS.slice(1).forEach(c => { if (f[c.key]) L.push(`   ${c.label}: ${f[c.key]}`); });
+    t.sections.forEach(f => {
+      if (f.key === 'bewertung' && (op.ergebnis || op.bewertung)) { L.push(''); L.push(f.label.toUpperCase()); if (op.ergebnis) L.push(`Ergebnis: ${op.ergebnis}`); if (op.bewertung) L.push(op.bewertung); }
+      else if (op[f.key]) { L.push(''); L.push(f.label.toUpperCase()); L.push(op[f.key]); }
+      if (t.finds && f.key === t.findsAfter) {
+        const finds = (op.finds || []).filter(x => FIND_COLS.some(c => x[c.key]));
+        L.push(''); L.push('FUNDE & ARTEFAKTE');
+        if (!finds.length) L.push('Keine Funde.');
+        finds.forEach((x, i) => {
+          L.push(`[F-${String(i + 1).padStart(2, '0')}] ${x.bezeichnung || 'Unbenannt'}`);
+          FIND_COLS.slice(1).forEach(c => { if (x[c.key]) L.push(`   ${c.label}: ${x[c.key]}`); });
+        });
+      }
     });
-    EXP_SECTIONS.slice(4, 6).forEach(sec);
-    L.push(''); L.push('7. ERGEBNIS & BEWERTUNG');
-    if (e.ergebnis) L.push(`Ergebnis: ${e.ergebnis}`);
-    if (e.bewertung) L.push(e.bewertung);
-    sec(EXP_SECTIONS[7]);
     L.push(''); L.push('════════════════════════════════');
-    L.push(`Gez. ${(Store.myChar(session.myCharId) || {}).name || ''}`);
+    L.push(`Gez. ${(me || {}).name || ''}`);
     return L.join('\n');
   }
 
   return {
-    EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition,
-    diaryPrompt, refinePrompt, expeditionPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, expeditionText, charLine,
+    EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition, OP_TYPES, opType, opHasContent,
+    diaryPrompt, refinePrompt, opPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, opText, charLine,
   };
 })();

@@ -62,7 +62,20 @@ const Store = (() => {
     }
     x.name = [x.firstName, x.lastName].filter(Boolean).join(' ') || x.name || '';
   }
-  function normalizeNames(d) { ['myChars', 'people'].forEach(c => (d[c] || []).forEach(splitName)); }
+  function normalizeNames(d) {
+    ['myChars', 'people'].forEach(c => (d[c] || []).forEach(splitName));
+    (d.sessions || []).forEach(migrateOps);
+  }
+
+  // Eine Session = ein Ingame-Monat mit 0..n Einsätzen. Alter Einzel-Expeditionsbericht → erster Einsatz.
+  function migrateOps(s) {
+    if (Array.isArray(s.ops)) return;
+    s.ops = [];
+    const e = s.expedition;
+    const has = e && (Object.keys(e).some(k => !['finds', 'geheimhaltung', 'ergebnis', 'imageStyle'].includes(k) && typeof e[k] === 'string' && e[k].trim()) || (e.finds || []).length || e.imageId);
+    if (has) s.ops.push({ ...e, id: 'op_' + s.id, type: 'expedition', title: 'Expedition', wanted: true });
+    delete s.expedition; delete s.hasExpedition; delete s.expeditionAuto; delete s.genWhat;
+  }
 
   function load() {
     try {

@@ -1,6 +1,6 @@
 /* Zenkai – Service Worker: App offline verfügbar machen.
    Bei Änderungen an der App VERSION erhöhen, damit Geräte die neue Version laden. */
-const VERSION = 'zenkai-v18';
+const VERSION = 'zenkai-v19';
 const FILES = ['./', 'index.html', 'css/style.css', 'js/config.js', 'js/store.js', 'js/sync.js', 'js/images.js', 'js/reports.js', 'js/ai.js', 'js/speech.js', 'js/app.js', 'icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {
