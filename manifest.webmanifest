@@ -1,0 +1,16 @@
+{
+  "name": "Zenkai – RP-Berichte",
+  "short_name": "Zenkai",
+  "description": "Tagebuch, Expeditionsberichte und Charakterverzeichnis für dein Naruto-RP",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16131a",
+  "theme_color": "#16131a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

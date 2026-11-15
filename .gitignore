@@ -1,0 +1,8 @@
+# Lokale Dateien, die nicht online gehören
+*.log
+*.tmp
+.claude/
+notizen*
+*.local.*
+desktop.ini
+Thumbs.db
