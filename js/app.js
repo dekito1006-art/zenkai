@@ -444,21 +444,54 @@
     Store.save();
   }
 
+  /* Einklappbarer Teil innerhalb eines Panels (Zustand wird wie bei den Einstellungen gemerkt) */
+  function sub(id, title, hint, body, def = false) {
+    return `<details class="sub" data-fold="${id}" ${foldOpen(id, def) ? 'open' : ''}>
+      <summary><span class="sub-title">${title}</span><span class="fold-hint">${esc(hint || '')}</span></summary>
+      <div class="sub-body">${body}</div></details>`;
+  }
+  const allToggle = scope => `<button class="btn ghost small" data-act="fold-all" data-scope="${scope}">⇕ Alle auf/zu</button>`;
+
+  /* Tagebuch in Abschnitte zerlegen: Überschrift = kurze Zeile ohne Satzzeichen am Ende, gefolgt von Text */
+  function diarySections(text) {
+    const lines = (text || '').replace(/\r/g, '').split('\n');
+    const out = []; let cur = { title: '', body: [] };
+    const isHead = (l, i) => {
+      const t = l.trim();
+      return t.length >= 2 && t.length <= 60 && !/[.!?…:,;)"“”]$/.test(t) && (i === 0 || !lines[i - 1].trim()) && lines[i + 1] && lines[i + 1].trim();
+    };
+    lines.forEach((l, i) => {
+      if (isHead(l, i) && (cur.title || cur.body.join('').trim())) { out.push(cur); cur = { title: l.trim(), body: [] }; }
+      else if (isHead(l, i) && !cur.title && !cur.body.join('').trim()) cur.title = l.trim();
+      else cur.body.push(l);
+    });
+    out.push(cur);
+    return out.map(x => ({ title: x.title, body: x.body.join('\n').trim() })).filter(x => x.title || x.body);
+  }
+  const diaryJoin = secs => secs.map(x => (x.title ? x.title + '\n' : '') + x.body).join('\n\n');
+
   function tabDiary(s, el) {
     const me = Store.myChar(s.myCharId);
     const ai = AI.available();
+    const secs = diarySections(s.diary.text);
+    const split = secs.length > 1 && !state.diaryWhole;
     el.innerHTML = `
-      <div class="panel diary">
+      <div class="panel diary" id="diary-panel">
         <div class="row-between"><h3>📖 Tagebuch von ${esc(me ? me.name : '')}</h3>
-          <div class="btns">${micBtn('diary')}${ai ? `<button class="btn small" data-act="gen-diary">✨ ${s.diary.text ? 'Neu schreiben' : 'Schreiben lassen'}</button>` : ''}</div></div>
+          <div class="btns">${split ? '' : micBtn('diary')}${ai ? `<button class="btn small" data-act="gen-diary">✨ ${s.diary.text ? 'Neu schreiben' : 'Schreiben lassen'}</button>` : ''}</div></div>
         <p class="muted small">Ich-Form, aus Sicht deines Charakters: Was hast du erlebt, gefühlt, gelernt?</p>
         ${!ai && !s.diary.text ? `<div class="btns"><button class="btn ghost small" data-act="diary-template">📝 Vorlage einfügen (Erlebt / Gefühlt / Gelernt)</button>${s.notes.trim() ? '<button class="btn ghost small" data-act="notes-to-diary">📋 Meine Notizen übernehmen</button>' : ''}</div>` : ''}
-        <textarea id="diary" class="paper" data-diary rows="14" placeholder="Liebes Tagebuch, …">${esc(s.diary.text)}</textarea>
-        <div class="muted small right">${words(s.diary.text)} Wörter</div>
-        ${ai ? `<div class="refine">
+        ${secs.length > 1 ? `<div class="row-between"><span class="muted small">${secs.length} Abschnitte · ${words(s.diary.text)} Wörter</span>
+          <div class="btns">${split ? allToggle('diary-panel') : ''}<button class="btn ghost small" data-act="diary-view">${split ? '📄 Als Ganzes bearbeiten' : '🗂 In Abschnitten anzeigen'}</button></div></div>` : ''}
+        ${split
+        ? `<div class="dsecs">${secs.map((x, i) => sub(`dsec-${i}`, esc(x.title || (i === 0 ? 'Einleitung' : 'Abschnitt ' + (i + 1))), `${words(x.body)} Wörter`,
+            `${x.title ? `<input class="dsec-title" data-dsec="${i}" data-k="title" value="${esc(x.title)}">` : ''}<textarea class="paper" data-dsec="${i}" data-k="body" rows="${Math.min(14, Math.max(3, Math.ceil(x.body.length / 70)))}">${esc(x.body)}</textarea>`, i === 0)).join('')}</div>`
+        : `<textarea id="diary" class="paper" data-diary rows="14" placeholder="Liebes Tagebuch, …">${esc(s.diary.text)}</textarea>
+           <div class="muted small right">${words(s.diary.text)} Wörter</div>`}
+        ${ai && s.diary.text ? sub('d-refine', '✨ Überarbeiten lassen', 'kürzer, emotionaler, eigene Anweisung …', `<div class="refine">
           <div class="chips">${['Kürzer', 'Emotionaler', 'Mehr Gelerntes betonen', 'Mehr im Ton meines Charakters', 'Rechtschreibung korrigieren'].map(x => `<button class="chip" data-refine="${esc(x)}">${esc(x)}</button>`).join('')}</div>
           <div class="row"><input id="refine-own" placeholder="Eigene Anweisung, z. B. „Erwähne meine Angst vor Wasser“"><button class="btn small" data-act="refine-own">Überarbeiten</button></div>
-        </div>` : ''}
+        </div>`) : ''}
         ${imgSection(s, 'diary')}
       </div>`;
   }
@@ -482,8 +515,7 @@
     const scenes = (s.analysis && s.analysis.scenes) || [];
     const refs = Reports.imageRefs(s, kind);
     const canPrompt = hasText && (ai || (topic.text || '').trim() || topic.scene != null);
-    return `<div class="report-img">
-      <h4>🎨 Bild zum ${kind === 'diary' ? 'Eintrag' : 'Bericht'}</h4>
+    return sub(`img-${kind}`, `🎨 Bild zum ${kind === 'diary' ? 'Eintrag' : 'Bericht'}`, h.imageId ? '✓ Bild vorhanden' : 'noch kein Bild', `<div class="report-img">
       ${h.imageId ? `<img data-img="${esc(h.imageId)}" alt="Bild">
         <div class="btns"><button class="btn small" data-img-share="${kind}">Teilen</button><button class="btn ghost small" data-img-dl="${kind}">Speichern</button><button class="btn ghost small danger" data-img-del="${kind}">Entfernen</button></div>` : ''}
       <div class="img-topic">
@@ -509,7 +541,7 @@
           ${refs.length ? `<button class="btn ghost small" data-img-refs="${kind}">🖼 Porträts teilen (${refs.length})</button>` : ''}
           <button class="btn ghost small" data-img-copy="${kind}">Nochmal kopieren</button></div></div>` : ''}
       <p class="muted small">${!hasText ? 'Erst den Text schreiben (lassen), dann das Bild.' : !ai ? 'Ohne KI: Wähle eine Szene oder beschreibe das Motiv – Zenkai baut daraus die Beschreibung mit den Daten deiner Figuren.' : 'Kostenlos über ChatGPT oder Gemini (mit deinem Konto). „Direkt erstellen“ braucht bei Google eine hinterlegte Abrechnung (ca. 4 Cent/Bild).'}</p>
-    </div>`;
+    </div>`, !!h.imageId || state.showPrompt === kind);
   }
 
   // Bildbeschreibung erstellen, kopieren und anzeigen (mit KI; ohne KI aus Vorlage)
@@ -580,23 +612,26 @@
     const field = f => f.type === 'select'
       ? `<label>${esc(f.label)}<select data-e="${f.key}">${opts(f.options, e[f.key], '–')}</select></label>`
       : `<label>${esc(f.label)}<input data-e="${f.key}" value="${esc(e[f.key])}" placeholder="${esc(f.ph || '')}"></label>`;
-    const area = f => `<div class="sec"><div class="row-between"><h4>${esc(f.label)}</h4>${micBtn('e-' + f.key)}</div>
-      <textarea id="e-${f.key}" data-e="${f.key}" rows="${f.key === 'verlauf' ? 7 : 4}" placeholder="${esc(f.hint)}">${esc(e[f.key])}</textarea></div>`;
+    const status = v => (v || '').trim() ? `✓ ${words(v)} Wörter` : 'leer';
+    const area = f => sub(`exp-${f.key}`, esc(f.label), f.key === 'bewertung' ? [e.ergebnis, (e.bewertung || '').trim() && words(e.bewertung) + ' Wörter'].filter(Boolean).join(' · ') || 'offen' : status(e[f.key]),
+      `${f.key === 'bewertung' ? `<select data-e="ergebnis">${opts(Reports.RESULT, e.ergebnis, '– Ergebnis wählen –')}</select>` : ''}<div class="row-between"><span class="muted small">${esc(f.hint)}</span>${micBtn('e-' + f.key)}</div>
+      <textarea id="e-${f.key}" data-e="${f.key}" rows="${f.key === 'verlauf' ? 7 : 4}" placeholder="${esc(f.hint)}">${esc(e[f.key])}</textarea>`);
     const S = Reports.EXP_SECTIONS;
+    const headFilled = Reports.EXP_HEAD.filter(f => e[f.key]).length;
+    const finds = (e.finds || []);
     el.innerHTML = `
-      <div class="panel report">
+      <div class="panel report" id="exp-panel">
         <div class="row-between"><h3>📜 Expeditionsbericht · Archäologie-Division</h3>
-          ${AI.available() ? '<button class="btn small" data-act="gen-exp">✨ Aus Erzählung ausfüllen</button>' : ''}</div>
-        <div class="grid2">${Reports.EXP_HEAD.map(field).join('')}</div>
-        <div class="row-between"><span></span><button class="btn ghost small" data-act="fill-team">Teilnehmer aus Session übernehmen</button></div>
+          <div class="btns">${allToggle('exp-panel')}${AI.available() ? '<button class="btn small" data-act="gen-exp">✨ Aus Erzählung ausfüllen</button>' : ''}</div></div>
+        ${sub('exp-head', '🗂 Kopfdaten', `${headFilled}/${Reports.EXP_HEAD.length} ausgefüllt`, `<div class="grid2">${Reports.EXP_HEAD.map(field).join('')}</div>
+          <div class="row-between"><span></span><button class="btn ghost small" data-act="fill-team">Teilnehmer aus Session übernehmen</button></div>`, true)}
         ${S.slice(0, 4).map(area).join('')}
-        <div class="sec"><div class="row-between"><h4>4. Funde & Artefakte</h4><button class="btn ghost small" data-act="add-find">＋ Fund</button></div>
-          ${(e.finds || []).length ? (e.finds || []).map((f, i) => `<div class="find">
+        ${sub('exp-finds', '4. Funde & Artefakte', finds.length ? `✓ ${finds.length} Fund(e)` : 'keine', `<div class="row-between"><span></span><button class="btn ghost small" data-act="add-find">＋ Fund</button></div>
+          ${finds.length ? finds.map((f, i) => `<div class="find">
             <div class="find-head"><strong>F-${String(i + 1).padStart(2, '0')}</strong><button class="btn ghost small danger" data-del-find="${i}">✕</button></div>
             <div class="grid2">${Reports.FIND_COLS.map(c => `<label>${c.label}<input data-find="${i}" data-k="${c.key}" value="${esc(f[c.key])}"></label>`).join('')}</div></div>`).join('')
-        : '<p class="muted small">Noch keine Funde eingetragen.</p>'}</div>
+        : '<p class="muted small">Noch keine Funde eingetragen.</p>'}`)}
         ${S.slice(4, 6).map(area).join('')}
-        <div class="sec"><h4>7. Ergebnis</h4><select data-e="ergebnis">${opts(Reports.RESULT, e.ergebnis, '– Ergebnis wählen –')}</select></div>
         ${S.slice(6).map(area).join('')}
         ${imgSection(s, 'expedition')}
       </div>`;
@@ -1060,6 +1095,12 @@
         return;
       }
       case 'add-mychar': return personForm({ _mine: true }, 'Neuer Charakter', v => { D().myChars.push({ id: Store.uid(), ...v }); Store.save(); });
+      case 'diary-view': state.diaryWhole = !state.diaryWhole; return render();
+      case 'fold-all': {
+        const ds = [...document.querySelectorAll(`#${d.scope} details.sub`)];
+        const open = !ds.every(x => x.open);
+        ds.forEach(x => { x.open = open; }); return;
+      }
       case 'hide-ai-hint': try { localStorage.setItem('zenkai.hideAiHint', '1'); } catch (e) { } return render();
       case 'diary-template': s.diary.text = diaryTemplate(s); Store.save(); render(); { const ta = $('#diary'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.indexOf('…'), ta.value.indexOf('…') + 1); } } return;
       case 'notes-to-diary': s.diary.text = (s.ingameDate ? s.ingameDate + '\n\n' : '') + s.notes.trim(); Store.save(); render(); return toast('Notizen übernommen – jetzt in Ich-Form umschreiben');
@@ -1112,6 +1153,11 @@
     if (d.s !== undefined) { s[d.s] = el.value; Store.saveSoon(); if (d.s === 'myCharId') render(); return; }
     if (d.qa !== undefined) { s.qa[d.qa].a = el.value; return Store.saveSoon(); }
     if (d.scene !== undefined) { s.analysis.scenes[d.scene][d.k] = el.value; return Store.saveSoon(); }
+    if (d.dsec !== undefined) { // Tagebuch-Abschnitt bearbeitet → Gesamttext neu zusammensetzen
+      const secs = diarySections(s.diary.text);
+      if (secs[d.dsec]) { secs[d.dsec][d.k] = d.k === 'title' ? el.value.replace(/\n/g, ' ') : el.value; s.diary.text = diaryJoin(secs); s.diary.updatedAt = Date.now(); Store.saveSoon(); }
+      return;
+    }
     if (el.id === 'bulk-field') { state.bulkField = el.value; return render(); }
     if (d.imgTopic) {
       imgTopic(s, d.imgTopic).text = el.value; Store.saveSoon();
