@@ -4,7 +4,7 @@ const Store = (() => {
   const COLLECTIONS = ['myChars', 'people', 'sessions'];
   // Einstellungen, die zwischen Geräten abgeglichen werden.
   // API-Schlüssel nur, wenn „Schlüssel über den Sync übertragen“ (syncKeys) eingeschaltet ist.
-  const BASE_SYNC = ['diaryFormat', 'diaryLength', 'creativity', 'expeditionDivisions', 'lists', 'provider', 'openaiModel', 'openaiSttModel', 'geminiModel', 'speechMode', 'syncKeys'];
+  const BASE_SYNC = ['diaryFormat', 'diaryLength', 'creativity', 'expeditionDivisions', 'lists', 'provider', 'openaiModel', 'openaiSttModel', 'geminiModel', 'speechMode', 'syncKeys', 'useStyle'];
   const syncSettings = () => data.settings.syncKeys ? [...BASE_SYNC, 'geminiKey', 'openaiKey'] : BASE_SYNC;
 
   const DEFAULT_LISTS = {
@@ -25,6 +25,7 @@ const Store = (() => {
       diaryLength: 'auto',           // 'auto' | 'sehr kurz' | 'kurz' | 'mittel' | 'ausführlich'
       creativity: 'treu',            // 'treu' | 'ausschmuecken'
       syncKeys: false,               // API-Schlüssel über den Sync auf eigene Geräte übertragen
+      useStyle: true,                // Stil früherer Einträge als Vorlage für neue
       expeditionDivisions: ['Archäologie'],
       lists: JSON.parse(JSON.stringify(DEFAULT_LISTS)),
     },

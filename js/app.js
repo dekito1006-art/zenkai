@@ -203,10 +203,10 @@
     el.innerHTML = `
       <div class="panel">
         <h3>Erzähl, was in der Session passiert ist</h3>
-        <p class="muted small">Einfach drauflosreden – wohin ihr gegangen seid, wen du getroffen hast, warum, was dabei herauskam, wie es dir ging und was du gelernt hast.</p>
+        <p class="muted small">Einfach drauflosreden – oder nur <strong>Stichpunkte</strong> notieren. Zenkai formuliert daraus Tagebuch und Berichte aus und fragt nach, wo Details fehlen.</p>
         <button class="btn primary big mic" data-mic="notes" type="button">🎤 Erzähl einfach los</button>
-        <textarea id="notes" data-s="notes" rows="8" placeholder="…oder hier tippen. z. B.: Wir sind mit Kenji zu den Ruinen bei Uzushio, da war eine versiegelte Kammer…">${esc(s.notes)}</textarea>
-        <div class="muted small right">${words(s.notes)} Wörter</div>
+        <textarea id="notes" data-s="notes" rows="8" placeholder="Erzählen oder Stichpunkte, z. B.:&#10;- Jinsei nicht gefunden, Brief geschrieben&#10;- Sensei bringt mir Feuerball bei&#10;- Schmied Yokurai leiht mir Geld für 2 Schwerter&#10;- erste Mission mit Furaion">${esc(s.notes)}</textarea>
+        <div class="muted small right">${s.notes.trim() && Reports.isBullets(s.notes) ? '📝 Stichpunkte erkannt · ' : ''}${words(s.notes)} Wörter</div>
       </div>
       ${scenes.length ? scenesPanel(s, scenes) : ''}
       ${scenes.length || opsOf(s).length ? opsPanel(s) : ''}
@@ -344,7 +344,7 @@
   async function analyze(s, quiet) {
     if (!s.notes.trim()) throw new Error('Erzähl zuerst, was passiert ist.');
     const marked = markKnownPeople(s);
-    const r = await AI.completeJSON(Reports.analyzePrompt(s));
+    const r = await AI.completeJSON({ ...Reports.analyzePrompt(s), quality: true });
     s.analysis = {
       at: Date.now(),
       scenes: arr(r.scenes).map(x => ({ title: str(x.title), summary: str(x.summary), people: arr(x.people).map(str).filter(Boolean), feeling: str(x.feeling) })).filter(x => x.title || x.summary),
@@ -366,7 +366,7 @@
     const fixable = conf.filter(c => ['rank', 'age', 'title'].includes(c.type) && str(c.value));
     s.conflicts = fixable.slice(0, 4).map(c => ({ type: c.type, text: str(c.text), value: str(c.value) }));
     const fresh = [...conf.filter(c => !fixable.includes(c)).map(c => ({ q: str(c.text), why: 'Widerspruch in der Erzählung', a: '' })),
-      ...arr(r.questions).slice(0, 4).map(x => ({ q: str(x.q || x), why: str(x.why), a: '' }))].filter(x => x.q);
+      ...arr(r.questions).slice(0, Reports.isBullets(s.notes) ? 6 : 4).map(x => ({ q: str(x.q || x), why: str(x.why), a: '' }))].filter(x => x.q);
     s.qa = [...(s.qa || []).filter(x => x.a && x.a.trim()), ...fresh];
     // Neue Personen (mit Beruf) als Vorschlag
     const known = new Set(D().people.map(p => p.name.toLowerCase()));
@@ -444,14 +444,22 @@
 
   async function genDiary(s) {
     if (!s.notes.trim()) throw new Error('Bitte zuerst Notizen eintragen.');
-    s.diary.text = (await AI.complete(Reports.diaryPrompt(s))).replace(/\*\*/g, '').replace(/^#+\s*/gm, '');
+    const clean = t => t.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').replace(/^[ \t]+/gm, '').trim();
+    let text = clean(await AI.complete({ ...Reports.diaryPrompt(s), quality: true }));
+    // Zweiter Durchgang: Faktencheck gegen Erzählung und Szenen (entfernt Erfundenes); bei Fehler bleibt der erste Text
+    try {
+      const r = await AI.completeJSON({ ...Reports.factCheckPrompt(s, text), quality: true });
+      const res = Reports.applyFactCheck(text, r.remove, s);
+      if (res.removed && words(res.text) > words(text) * 0.7) { text = res.text; s.diary.factCheck = res.removed; }
+    } catch (e) { console.warn('Faktencheck übersprungen', e); }
+    s.diary.text = text;
     s.diary.updatedAt = Date.now(); Store.save();
   }
   // Bericht zu einem Einsatz schreiben (Vorlage je nach Art)
   async function genOp(s, op) {
     if (!s.notes.trim()) throw new Error('Bitte zuerst Notizen eintragen.');
     const t = Reports.opType(op);
-    const r = await AI.completeJSON(Reports.opPrompt(s, op));
+    const r = await AI.completeJSON({ ...Reports.opPrompt(s, op), quality: true });
     [...t.head, ...t.sections].forEach(f => { if (r[f.key]) op[f.key] = String(r[f.key]); });
     if (r.ergebnis) op.ergebnis = r.ergebnis;
     if (t.finds && Array.isArray(r.finds) && r.finds.length) op.finds = r.finds.map(f => ({ ...f }));
@@ -913,6 +921,7 @@
         <label>Länge<select data-set="diaryLength">
           <option value="auto" ${s.diaryLength === 'auto' ? 'selected' : ''}>Automatisch (passend zur Erzählung)</option>
           ${opts(['sehr kurz', 'kurz', 'mittel', 'ausführlich'], s.diaryLength)}</select></label>
+        <label class="check" style="grid-column:1/-1"><input type="checkbox" data-set="useStyle" ${s.useStyle !== false ? 'checked' : ''}><span>Stil früherer Einträge übernehmen<br><span class="muted small">Die KI liest deine letzten Tagebücher bzw. den letzten Bericht derselben Art und schreibt im gleichen Ton weiter.</span></span></label>
         <label>KI-Freiheit<select data-set="creativity"><option value="treu" ${s.creativity === 'treu' ? 'selected' : ''}>Streng an Notizen halten</option><option value="ausschmuecken" ${s.creativity === 'ausschmuecken' ? 'selected' : ''}>Stimmung ausschmücken</option></select></label>
       </div>`)}
       ${fold('speech', '🎤 Spracheingabe', s.speechMode === 'ai' ? 'KI-Transkription' : 'Live-Diktat', `

@@ -131,6 +131,35 @@ const Reports = (() => {
   }
   const words = t => (t || '').trim().split(/\s+/).filter(Boolean).length;
 
+  // Stichpunkte statt Fließtext? (Spiegelstriche/Nummern, viele kurze Zeilen oder sehr wenig Text)
+  function isBullets(t) {
+    const lines = (t || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return false;
+    const marked = lines.filter(l => /^([-*•–·]|\d+[.)])\s*/.test(l)).length;
+    const short = lines.filter(l => words(l) <= 8).length;
+    return marked >= 2 || (lines.length >= 3 && short / lines.length >= 0.6) || words(t) < 60;
+  }
+  const BULLET_RULE = 'Die Erzählung besteht aus STICHPUNKTEN. Formuliere daraus vollständige, lebendige Sätze und verbinde die Punkte mit natürlichen Übergängen. ' +
+    'Du darfst Gefühle und Eindrücke des Charakters ergänzen, die zu Situation und Persönlichkeit passen – aber KEINE neuen Ereignisse, Personen, Orte, Ergebnisse, Absichten oder Begründungen ("weil …") erfinden. ' +
+    'Zuordnungen exakt übernehmen: wem welches Element, Jutsu, Gegenstand oder welche Aussage gehört (z. B. "Windversteck gegen mein Feuer" = der ANDERE hat Wind, ICH habe Feuer).';
+
+  // Stil früherer Einträge: letzte Tagebücher desselben Charakters bzw. letzter Bericht derselben Einsatz-Art
+  const clip = (t, n) => { t = (t || '').trim(); return t.length > n ? t.slice(0, n).replace(/\s+\S*$/, '') + ' …' : t; };
+  function pastSessions(session) {
+    return (Store.data.sessions || []).filter(x => x.id !== session.id && x.myCharId === session.myCharId)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+  }
+  function styleExamples(session, op) {
+    if (Store.data.settings.useStyle === false) return '';
+    if (!op) {
+      const ex = pastSessions(session).filter(x => x.diary && words(x.diary.text) > 60).slice(0, 2).map(x => clip(x.diary.text, 1200));
+      return ex.length ? `\nSTIL-VORLAGE – so klangen frühere Tagebucheinträge dieses Charakters:\n${ex.map((t, i) => `--- Beispiel ${i + 1} ---\n${t}`).join('\n')}\n--- Ende der Beispiele ---\n` +
+        `Übernimm Ton, Satzlänge, typische Ausdrücke und Aufbau dieser Beispiele – aber NICHT ihren Inhalt.\n` : '';
+    }
+    const prev = pastSessions(session).flatMap(x => (x.ops || []).filter(o => o.type === op.type && opHasContent(o)).map(o => ({ x, o })))[0];
+    return prev ? `\nSTIL-VORLAGE – ein früherer ${opType(op).report} desselben Spielers:\n${clip(opText(prev.x, prev.o), 1500)}\n--- Ende ---\nÜbernimm Stil, Detailgrad und Formulierungsweise – aber NICHT den Inhalt.\n` : '';
+  }
+
   function context(session, withScenes = true) {
     const me = Store.myChar(session.myCharId);
     const parts = (session.participants || []).map(Store.person).filter(Boolean);
@@ -181,7 +210,9 @@ const Reports = (() => {
         `Alltag, Einkäufe, Gespräche, Besuche sind KEINE Einsätze. Leere Liste, wenn es keine gab.\n` +
         `- ops.title: beschreibt, was der Auftrag bzw. das Training TATSÄCHLICH war (laut Erzählung) – nicht raten, keine Begriffe erfinden. ops.scenes: ALLE Szenen, die dazugehören (Vorbereitung wie Team zusammenstellen, Durchführung, Rückkehr).\n` +
         `- conflicts: Widersprüche zwischen den Charakter-/Session-Daten (Rang, Alter, Titel) und der Erzählung, z. B. Rang "Chunin", aber Erzählung "als ich Genin wurde" oder Titel "Monat", Erzählung "Tag". Die Session kann in der Vergangenheit liegen – der Charakter hatte damals evtl. einen niedrigeren Rang. value = der Wert, der laut Erzählung ZUM ZEITPUNKT DER SESSION galt (im Beispiel "Genin"), beim Titel ein korrigierter Titel. Leere Liste, wenn keine. Für rank nutze: ${L.ranks.join(', ')}.\n` +
-        `- questions: höchstens 4 wirklich wichtige fehlende oder unklare Informationen; nichts fragen, was beantwortet ist (auch nicht in den bisherigen Nachfragen).\n` +
+        (isBullets(session.notes)
+          ? `- Die Erzählung besteht aus STICHPUNKTEN: meist ist jeder Stichpunkt eine eigene Szene. questions: bis zu 6 gezielte Fragen zu wichtigen fehlenden Details (Wer genau? Warum? Wie ging es aus? Wie hast du dich gefühlt?).\n`
+          : `- questions: höchstens 4 wirklich wichtige fehlende oder unklare Informationen; nichts fragen, was beantwortet ist (auch nicht in den bisherigen Nachfragen).\n`) +
         `- newPeople: alle namentlich genannten Personen, die NICHT im Verzeichnis stehen. Vor- und Nachname trennen (nur einer bekannt → anderer ""). Beschreibungen wie "Sensei mit den blauen Haaren" nur, wenn ein Name genannt wird. profession = Beruf/Funktion, falls erkennbar (z. B. Schmied, Händler, Sensei/Ausbilder, Medic, Missionsbüro). Für rank/village/division nutze möglichst: ${L.ranks.join(', ')} / ${L.villages.join(', ')} / ${L.divisions.join(', ')}. note = ein Satz, wie die Person vorkam.\n` +
         `- updates: für bekannte Personen nur NEUE Erkenntnisse laut Erzählung (z. B. Beruf, Rang), sonst weglassen.\n` +
         `- Unbekannte Werte als "".`,
@@ -211,7 +242,9 @@ const Reports = (() => {
     const s = Store.data.settings;
     const n = words(session.notes) + (session.qa || []).reduce((a, x) => a + words(x.a), 0);
     const scenes = ((session.analysis && session.analysis.scenes) || []).length;
-    const auto = Math.max(160, Math.min(800, Math.round(Math.max(n * 0.7, scenes * 45) / 10) * 10));
+    // Bei Stichpunkten zählt die Zahl der Szenen (je ~60 Wörter), nicht die knappe Wortzahl der Eingabe
+    const bullets = isBullets(session.notes);
+    const auto = Math.max(bullets ? 220 : 160, Math.min(800, Math.round(Math.max(n * 0.7, scenes * (bullets ? 60 : 45)) / 10) * 10));
     return {
       auto: `ca. ${auto} Wörter (passend zur Länge der Erzählung)`, 'sehr kurz': '80–120 Wörter', kurz: '150–220 Wörter',
       mittel: '250–350 Wörter', 'ausführlich': '400–600 Wörter',
@@ -233,8 +266,9 @@ const Reports = (() => {
       system: 'Du bist Schreibassistent für ein deutschsprachiges Rollenspiel im Naruto-Universum. ' +
         'Du schreibst Tagebucheinträge in der Ich-Form aus Sicht des gespielten Charakters – persönlich, ehrlich, im Ton des Charakters. ' +
         'Verwende Naruto-Begriffe (Jutsu, Chakra, Dorfnamen, Ränge) natürlich. ' + creativityRule(),
-      user: context(session) +
-        `\nAUFGABE: Schreibe den Tagebucheintrag zu dieser Session. Länge: ${lengthRule(session)}.\n${diaryFormatRule()}\n` +
+      user: context(session) + styleExamples(session, null) +
+        (isBullets(session.notes) ? `\n${BULLET_RULE}\n` : '') +
+        `\nAUFGABE: Schreibe den Tagebucheintrag zu dieser Session (sie umfasst einen ganzen Ingame-Monat). Länge: ${lengthRule(session)}.\n${diaryFormatRule()}\n` +
         `INHALT – unbedingt einhalten:\n` +
         `- Alle Szenen in genau dieser Reihenfolge, keine weglassen, keine zusammenlegen.\n` +
         `- Zu jedem Ereignis den Grund und die Folge behalten (weil, deshalb, dafür, damit) – der Leser muss verstehen, warum etwas passiert.\n` +
@@ -244,6 +278,47 @@ const Reports = (() => {
         (session.ingameDate ? `- Erste Zeile: ${session.ingameDate}\n` : `- KEINE Datumszeile und kein erfundenes Datum.\n`) +
         `- Kein Markdown (keine Sternchen, Rauten oder Aufzählungszeichen). Gib nur den Eintrag zurück.`,
     };
+  }
+
+  /* Faktencheck: geschriebenen Text gegen Erzählung + Szenen prüfen und Erfundenes entfernen */
+  // Der Prüfer schreibt NICHT neu (ein schwaches Modell würde dabei neue Fehler einbauen),
+  // sondern nennt nur die erfundenen Stellen wörtlich – die App entfernt genau diese.
+  function factCheckPrompt(session, text) {
+    return {
+      system: 'Du bist ein strenger Faktenprüfer für Rollenspiel-Tagebücher. Antworte nur mit JSON.',
+      user: context(session) +
+        `\nTAGEBUCHEINTRAG ZUM PRÜFEN:\n${text}\n\n` +
+        `AUFGABE: Vergleiche den Eintrag mit Erzählung, Nachfragen und Szenen. Finde Textstellen, die dort NICHT gedeckt sind: ` +
+        `erfundene Handlungen (z. B. "habe ihn vertrieben"), erfundene Gründe/Absichten (z. B. "Weil ich gerade wieder Geld brauche,"), erfundene Ergebnisse, Gegenstände, Orte oder Personen. ` +
+        `Gefühle und Eindrücke sind erlaubt – nicht melden. ` +
+        `Antworte als {"remove": ["exakter Wortlaut der Stelle"]}. Jede Stelle muss ZEICHENGENAU im Eintrag vorkommen und nur den erfundenen Teilsatz umfassen (inkl. Komma), nicht den ganzen Absatz. Leere Liste, wenn alles stimmt.`,
+    };
+  }
+
+  // Gemeldete Stellen entfernen und Satzzeichen/Großschreibung aufräumen
+  // Schutz: Was durch die Erzählung gedeckt ist (Schlüsselwörter kommen dort vor), wird nie entfernt
+  const keyWords = t => (t || '').toLowerCase().replace(/[^a-zäöüß0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 5);
+  function covered(quote, session) {
+    const srcText = [session.notes, ...(session.qa || []).map(x => x.a), ...((session.analysis && session.analysis.scenes) || []).map(x => x.summary)].join(' ');
+    const src = keyWords(srcText);
+    const kw = keyWords(quote);
+    if (!kw.length) return false;
+    // verwandte Wörter zählen mit (Feuer ↔ Feuerversteck, trainiert ↔ Training): gemeinsamer Wortanfang ab 5 Buchstaben
+    const related = (a, b) => a.startsWith(b.slice(0, 5)) || b.startsWith(a.slice(0, 5));
+    const hits = kw.filter(w => src.some(s => related(w, s))).length;
+    return hits >= 2 || hits / kw.length >= 0.4;
+  }
+
+  function applyFactCheck(text, remove, session) {
+    let t = text, n = 0;
+    (remove || []).map(x => String(x || '')).filter(x => x.length >= 8 && x.length <= 300).forEach(q => {
+      if (t.includes(q) && !(session && covered(q, session))) { t = t.replace(q, ''); n++; }
+    });
+    t = t.replace(/[ \t]{2,}/g, ' ').replace(/ +([,.!?])/g, '$1').replace(/,\s*([.!?])/g, '$1').replace(/([.!?])\1+/g, '$1').replace(/^[ ,]+/gm, '').replace(/\n{3,}/g, '\n\n')
+      // nach entferntem Nebensatz ("Weil …, bin ich …") die Wortstellung reparieren: "Bin ich" → "Ich bin"
+      .replace(/(^|[.!?]\s+|\n)(bin|habe|hab|war|hatte|musste|wollte|konnte|sollte|durfte|ging|lief|kam) ich /gi, (m, a, v) => `${a}Ich ${v.toLowerCase()} `)
+      .replace(/(^|[.!?]\s+|\n)([a-zäöü])/g, (m, a, b) => a + b.toUpperCase());
+    return { text: t, removed: n };
   }
 
   function refinePrompt(text, instruction, session) {
@@ -268,6 +343,8 @@ const Reports = (() => {
         `\nEINSATZ, ZU DEM DER BERICHT GEHÖRT: ${t.label} – ${op.title || ''}${op.summary ? ' (' + op.summary + ')' : ''}\n` +
         (mine.length ? `ZUGEHÖRIGE SZENEN:\n${mine.map(x => `- ${x.title}: ${x.summary}`).join('\n')}\n` : '') +
         `WICHTIG: Berichte NUR über diesen Einsatz, nicht über andere Ereignisse des Monats.\n` +
+        styleExamples(session, op) +
+        (isBullets(session.notes) ? `\nDie Angaben des Spielers sind Stichpunkte: formuliere sie zu vollständigen, sachlichen Berichtssätzen aus, ohne neue Fakten zu erfinden.\n` : '') +
         `\nAUFGABE: Antworte ausschließlich mit einem JSON-Objekt mit den Schlüsseln: ${keys.join(', ')}, ergebnis${t.finds ? ', finds' : ''}.\n` +
         (keys.includes('geheimhaltung') ? `- geheimhaltung: einer von ${JSON.stringify(SECRECY)}\n` : '') +
         (keys.includes('missionsRang') ? `- missionsRang: einer von ${JSON.stringify(MISSION_RANKS)} oder ""\n` : '') +
@@ -393,7 +470,7 @@ const Reports = (() => {
   }
 
   return {
-    EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition, OP_TYPES, opType, opHasContent,
-    diaryPrompt, refinePrompt, opPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, opText, charLine,
+    EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition, OP_TYPES, opType, opHasContent, isBullets,
+    diaryPrompt, refinePrompt, factCheckPrompt, applyFactCheck, opPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, opText, charLine,
   };
 })();

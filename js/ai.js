@@ -77,7 +77,7 @@ const AI = (() => {
 
   // Fragt die Modelle gestaffelt an: Antwortet eines nicht binnen 8 s, startet parallel das nächste.
   // Die erste erfolgreiche Antwort gewinnt, alle anderen Anfragen werden abgebrochen.
-  function race(models, body, staggered) {
+  function race(models, body, staggered, hedgeMs = HEDGE_MS) {
     const s = S();
     return new Promise((resolve, reject) => {
       const ctrls = [], started = [];
@@ -89,7 +89,8 @@ const AI = (() => {
         if (done || idx >= models.length) { if (!done && pending === 0) finish(reject, Object.assign(lastErr || new Error('Kein Gemini-Modell erreichbar.'), { refresh })); return; }
         const model = models[idx++], ctrl = new AbortController();
         ctrls.push(ctrl); started.push(model); pending++;
-        if (staggered && idx < models.length) hedge = setTimeout(next, HEDGE_MS);
+        // Vollwertige Modelle bekommen bei Schreibaufgaben mehr Zeit, bevor ein Lite-Modell parallel startet
+        if (staggered && idx < models.length) hedge = setTimeout(next, /-lite$/.test(models[idx]) ? hedgeMs : HEDGE_MS);
         fetch(`${GBASE}/models/${encodeURIComponent(model)}:generateContent`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': s.geminiKey }, body: JSON.stringify(body), signal: ctrl.signal,
         }).then(async res => {
@@ -119,7 +120,7 @@ const AI = (() => {
     });
   }
 
-  async function gemini(body) {
+  async function gemini(body, hedgeMs = HEDGE_MS) {
     const s = S();
     if (!isAuto()) {
       try { return await race([s.geminiModel.trim()], body, false); }
@@ -128,14 +129,15 @@ const AI = (() => {
         s.geminiModel = 'auto'; Store.save(); // eingetragenes Modell existiert nicht (mehr) → dauerhaft auf 'auto'
       }
     }
-    try { return await race(bySpeed(await geminiCandidates(false)), body, true); }
+    try { return await race(bySpeed(await geminiCandidates(false)), body, true, hedgeMs); }
     catch (e) {
       if (!e.refresh) throw e;
-      return race(bySpeed(await geminiCandidates(true)), body, true); // Modellliste veraltet → neu laden und nochmal
+      return race(bySpeed(await geminiCandidates(true)), body, true, hedgeMs); // Modellliste veraltet → neu laden und nochmal
     }
   }
 
-  async function complete({ system, user, json = false }) {
+  // quality: Schreibaufgaben (Analyse, Tagebuch, Berichte) – vollwertiges Modell bekommt 25 s, bevor Lite einspringt
+  async function complete({ system, user, json = false, quality = false }) {
     const s = S();
     if (!available()) throw new Error('Keine KI eingerichtet. Bitte in den Einstellungen Anbieter und API-Schlüssel eintragen.');
     const kp = keyProblem(s.provider, s.provider === 'gemini' ? s.geminiKey : s.openaiKey);
@@ -162,7 +164,7 @@ const AI = (() => {
       contents: [{ role: 'user', parts: [{ text: user }] }],
     };
     if (json) body.generationConfig = { responseMimeType: 'application/json' };
-    const j = await gemini(body);
+    const j = await gemini(body, quality ? 25000 : HEDGE_MS);
     const c = j.candidates && j.candidates[0];
     if (!c || !c.content) throw new Error('Gemini hat keine Antwort geliefert' + (c && c.finishReason ? ' (' + c.finishReason + ')' : '') + '.');
     return c.content.parts.map(p => p.text || '').join('').trim();
