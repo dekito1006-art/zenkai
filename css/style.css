@@ -275,3 +275,17 @@ textarea { resize: vertical; line-height: 1.55; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 #toast.error { border-color: var(--danger); color: #ffb4b6; }
 @media (min-width: 721px) { #toast { bottom: 24px; } }
+
+/* Missionen */
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.shot { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.shot img { width: 100%; height: 110px; object-fit: cover; display: block; }
+.shot .btn { position: absolute; top: 4px; right: 4px; min-height: 28px; padding: 2px 8px; background: rgba(0,0,0,.6); }
+.mm-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.mm-row:first-of-type { border-top: 0; }
+.mm-row input { padding: 8px 10px; }
+.mm-row.lead input { border-color: var(--accent); font-weight: 600; }
+.mm-info { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mm-info .btn { min-height: 30px; padding: 3px 9px; }
+/* 6 Menüpunkte am Handy */
+@media (max-width: 720px) { .nav button { font-size: .62rem; } .nav button span { font-size: 1.2rem; } }

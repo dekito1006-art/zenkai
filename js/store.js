@@ -1,7 +1,7 @@
 /* Zenkai – Datenspeicher (localStorage + JSON-Backup + Änderungsverfolgung für den Sync) */
 const Store = (() => {
   const KEY = 'zenkai.v1';
-  const COLLECTIONS = ['myChars', 'people', 'sessions'];
+  const COLLECTIONS = ['myChars', 'people', 'sessions', 'missions'];
   // Einstellungen, die zwischen Geräten abgeglichen werden.
   // API-Schlüssel nur, wenn „Schlüssel über den Sync übertragen“ (syncKeys) eingeschaltet ist.
   const BASE_SYNC = ['diaryFormat', 'diaryLength', 'creativity', 'expeditionDivisions', 'lists', 'provider', 'openaiModel', 'openaiSttModel', 'geminiModel', 'speechMode', 'syncKeys', 'useStyle'];
@@ -33,6 +33,7 @@ const Store = (() => {
     myChars: [],   // eigene Charaktere
     people: [],    // Verzeichnis
     sessions: [],
+    missions: [],  // eigenständige Missionsberichte (Vorlage Missionsbüro)
     deleted: {},   // id -> Zeitpunkt der Löschung (damit Löschungen synchronisiert werden)
   });
 
@@ -218,5 +219,6 @@ const Store = (() => {
     myChar: id => data.myChars.find(c => c.id === id),
     person: id => data.people.find(p => p.id === id),
     session: id => data.sessions.find(s => s.id === id),
+    mission: id => (data.missions || []).find(m => m.id === id),
   };
 })();

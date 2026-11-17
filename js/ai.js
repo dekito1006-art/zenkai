@@ -300,11 +300,34 @@ const AI = (() => {
     return text;
   }
 
+  /* Bilder/Screenshots mit KI auswerten und JSON zurückgeben (z. B. Teilnehmerliste aus dem Spiel) */
+  async function visionJSON(prompt, blobs) {
+    const s = S();
+    if (!available()) throw new Error('Zum Auslesen von Screenshots bitte zuerst eine KI verbinden.');
+    const imgs = [];
+    for (const b of blobs) imgs.push({ mime: b.type || 'image/jpeg', b64: await Images.toBase64(b) });
+    let text;
+    if (s.provider === 'openai') {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + s.openaiKey },
+        body: JSON.stringify({ model: s.openaiModel, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imgs.map(i => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.b64}` } }))] }] }),
+      });
+      if (!res.ok) throw await readError(res);
+      text = (await res.json()).choices[0].message.content;
+    } else {
+      const j = await gemini({ contents: [{ role: 'user', parts: [...imgs.map(i => ({ inline_data: { mime_type: i.mime, data: i.b64 } })), { text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }, 25000);
+      const c = j.candidates && j.candidates[0];
+      text = c && c.content && (c.content.parts || []).map(p => p.text || '').join('');
+      if (!text) throw new Error('Die KI konnte die Bilder nicht auswerten' + (c && c.finishReason ? ' (' + c.finishReason + ')' : '') + '.');
+    }
+    return parseJSON(text);
+  }
+
   async function test() {
     const r = await complete({ system: 'Antworte knapp.', user: 'Sag "Verbindung steht!" auf Deutsch.' });
     const s = S();
     return r + (s.provider === 'gemini' ? ` (Modell: ${lastModel})` : '');
   }
 
-  return { available, keyProblem, generateImage, describeLooks, complete, completeJSON, transcribe, test, get lastModel() { return lastModel; } };
+  return { available, keyProblem, generateImage, describeLooks, visionJSON, complete, completeJSON, transcribe, test, get lastModel() { return lastModel; } };
 })();

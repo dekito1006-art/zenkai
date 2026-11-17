@@ -435,6 +435,74 @@ const Reports = (() => {
     return [me, ...cast].filter(c => c && c.imageId).slice(0, 4).map(c => ({ name: c.name, imageId: c.imageId }));
   }
 
+  /* ---------- Eigenständiger Missionsbericht (Vorlage des Missionsbüros) ---------- */
+  const MB_SECTIONS = [
+    { key: 'ziel', label: 'Missionsziel', hint: 'Was war der Auftrag?' },
+    { key: 'beobachtungen', label: 'Beobachtungen', hint: 'Was wurde unterwegs wahrgenommen?' },
+    { key: 'auffaelligkeiten', label: 'Auffälligkeiten', hint: 'Ungewöhnliches, Verdächtiges, Besonderheiten' },
+    { key: 'ergebnis', label: 'Missionsergebnis', hint: 'Ausgang der Mission' },
+  ];
+  const bullets = t => (t || '').split('\n').map(l => l.replace(/^\s*[-–•*]\s?/, '').trim()).filter(Boolean);
+
+  // Screenshots auslesen: Teilnehmerliste, Team, ggf. Missionsbeschreibung
+  function screenshotPrompt() {
+    const known = (Store.data.people || []).map(p => p.name).concat((Store.data.myChars || []).map(c => c.name)).join(', ');
+    return 'Die Bilder sind Screenshots aus einem Naruto-Rollenspiel, z. B. die Teilnehmerliste einer Mission oder eine Missionsbeschreibung. ' +
+      'Lies alle Informationen genau ab und antworte nur mit JSON:\n' +
+      '{"team": "Name der Einheit/des Teams oder \\"\\"", "rank": "Missionsrang D|C|B|A|S oder \\"\\"", ' +
+      '"members": [{"name": "Name exakt wie geschrieben", "self": true wenn mit (du) o. ä. markiert, "leader": true wenn als Truppführer/Leiter/Captain markiert}], ' +
+      '"ziel": "Missionsziel/-beschreibung, falls sichtbar, sonst \\"\\"", "other": "weitere relevante Infos oder \\"\\""}\n' +
+      'Überschriften wie „Teilnehmer 10/10“ oder „Missionseinheit · 9/10“ sind keine Personen. Keine Namen erfinden. ' +
+      (known ? `Bekannte Namen zum Abgleich (Schreibweise im Bild hat Vorrang): ${known}.` : '');
+  }
+
+  function missionCharLine(m) {
+    const me = Store.myChar(m.myCharId);
+    return me ? [me.name, m.rankSelf || me.rank, me.village].filter(Boolean).join(', ') : '';
+  }
+
+  function missionPrompt(m) {
+    const leaders = (m.members || []).filter(x => x.leader).map(x => x.name);
+    const members = (m.members || []).filter(x => !x.leader).map(x => x.name + (x.self ? ' (ich)' : ''));
+    const prev = (Store.data.missions || []).filter(x => x.id !== m.id && MB_SECTIONS.some(f => (x[f.key] || '').trim()))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+    const style = Store.data.settings.useStyle !== false && prev
+      ? `\nSTIL-VORLAGE – ein früherer Missionsbericht dieses Spielers:\n${missionText(prev)}\n--- Ende ---\nÜbernimm Stil und Detailgrad, NICHT den Inhalt.\n` : '';
+    return {
+      // Offizieller Bericht ans Missionsbüro: bewusst KEIN Alter und kein persönlicher/kindlicher Ton (anders als im Tagebuch)
+      system: 'Du schreibst im Naruto-Universum OFFIZIELLE Missionsberichte, die beim Missionsbüro eingereicht werden: formell, knapp, sachlich, in kurzen Stichpunkten. ' +
+        'Der Stil ist immer der eines dienstlichen Berichts – unabhängig von Alter, Persönlichkeit oder Sprechweise des Verfassers (keine Umgangssprache, keine Gefühle, kein kindlicher Ton). ' +
+        creativityRule() + ' Antworte nur mit JSON.',
+      user: `VERFASSER: ${missionCharLine(m) || 'unbekannt'}\n` +
+        (m.team ? `TEAM: ${m.team}\n` : '') + (m.rank ? `MISSIONSRANG: ${m.rank}\n` : '') +
+        `TRUPPFÜHRER: ${leaders.join(', ') || '(nicht angegeben)'}\nMITGLIEDER: ${members.join(', ') || '(keine angegeben)'}\n` +
+        (m.screenInfo ? `INFOS AUS SCREENSHOTS: ${m.screenInfo}\n` : '') +
+        `\nNOTIZEN/ERZÄHLUNG DES SPIELERS ZUR MISSION:\n${m.notes || '(keine)'}\n` + style +
+        `\nAUFGABE: Fülle die Vorlage des Missionsbüros. Antworte als JSON:\n` +
+        `{"team": "Teamname, falls genannt, sonst \\"\\"", "leaders": ["Truppführer laut Notizen, falls oben keiner angegeben ist"], ` +
+        `"ziel": ["…"], "beobachtungen": ["…"], "auffaelligkeiten": ["…"], "ergebnis": ["…"], "verluste": "\\"Keine Verluste\\" oder kurze Angabe der Verluste/Verletzungen"}\n` +
+        `REGELN: je Abschnitt 1–4 kurze Stichpunkte (ohne führenden Strich), sachlicher Berichtston, dritte Person oder neutral; ` +
+        `Beobachtungen = was wahrgenommen wurde; Auffälligkeiten = Ungewöhnliches/Verdächtiges (leer lassen, wenn nichts); Ergebnis = Ausgang der Mission. ` +
+        `Nichts erfinden, was nicht in den Notizen oder Screenshots steht – fehlt etwas, Abschnitt leer lassen.`,
+    };
+  }
+
+  // Exakt im Format der Missionsbüro-Vorlage (zum Einfügen)
+  function missionText(m) {
+    const L = [];
+    const leaders = (m.members || []).filter(x => x.leader), members = (m.members || []).filter(x => !x.leader);
+    L.push(`Team "${m.team || 'XYZ'}"`);
+    if (leaders.length) { L.push('Truppführer:'); leaders.forEach(x => L.push('-' + x.name)); }
+    L.push('Mitglieder:'); (members.length ? members : [{ name: '' }]).forEach(x => L.push('-' + x.name));
+    MB_SECTIONS.forEach(f => {
+      L.push(''); L.push(f.label + ':');
+      const b = bullets(m[f.key]);
+      if (f.key === 'ergebnis') { (b.length ? b : (m.verluste ? [] : [''])).forEach(x => L.push('-' + x)); if (m.verluste) L.push('-' + m.verluste.replace(/^-/, '')); }
+      else (b.length ? b : ['']).forEach(x => L.push('-' + x));
+    });
+    return L.join('\n');
+  }
+
   /* ---------- Textexport ---------- */
   function diaryText(session) {
     const me = Store.myChar(session.myCharId);
@@ -471,6 +539,7 @@ const Reports = (() => {
 
   return {
     EXP_HEAD, EXP_SECTIONS, FIND_COLS, RESULT, emptyExpedition, OP_TYPES, opType, opHasContent, isBullets,
+    MB_SECTIONS, screenshotPrompt, missionPrompt, missionText,
     diaryPrompt, refinePrompt, factCheckPrompt, applyFactCheck, opPrompt, analyzePrompt, imagePrompt, localImagePrompt, imageRefs, IMG_STYLES, rankOf, ageOf, diaryText, opText, charLine,
   };
 })();

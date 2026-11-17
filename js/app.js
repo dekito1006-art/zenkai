@@ -123,7 +123,7 @@
     if (gated()) { document.body.classList.add('gated'); viewGate(); return; }
     document.body.classList.remove('gated');
     document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === state.view || (state.view === 'session' && b.dataset.view === 'sessions')));
-    ({ book: viewBook, sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
+    ({ book: viewBook, missions: viewMissions, sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
     Images.hydrate(app);
   }
 
@@ -679,6 +679,125 @@
       opsOf(s).filter(Reports.opHasContent).map(op => block(op.id, `📜 ${esc(Reports.opType(op).report)}${op.title ? ' – ' + esc(op.title) : ''}`, Reports.opText(s, op))).join('');
   }
 
+  /* ---------- Missionen: eigenständige Missionsberichte nach Vorlage des Missionsbüros ---------- */
+  const missions = () => (D().missions = D().missions || []);
+  const mHasReport = m => Reports.MB_SECTIONS.some(f => (m[f.key] || '').trim());
+
+  function viewMissions() {
+    const m = state.missionId && Store.mission(state.missionId);
+    if (m) return missionEditor(m);
+    const list = [...missions()].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+    app.innerHTML = `
+      <div class="head"><h1>🗡️ Missionen</h1><button class="btn primary" data-act="new-mission">＋ Missionsbericht</button></div>
+      <p class="muted small">Missionsberichte im Format des Missionsbüros. Screenshot der Teilnehmerliste hochladen, kurz notieren, was passiert ist – Zenkai füllt die Vorlage aus.</p>
+      ${list.length ? `<div class="cards">${list.map(x => {
+        const leaders = (x.members || []).filter(y => y.leader).map(y => y.name);
+        return `<button class="card" data-mopen="${x.id}">
+          <div class="card-top"><strong>${esc(x.title || (x.team ? 'Team „' + x.team + '“' : 'Mission'))}</strong><span class="muted">${fmtDate(x.date)}</span></div>
+          <div class="muted small">${x.rank ? 'Rang ' + esc(x.rank) + ' · ' : ''}${(x.members || []).length} Teilnehmer${leaders.length ? ' · Truppführer: ' + esc(leaders.join(', ')) : ''}</div>
+          <div class="badges"><span class="badge ${mHasReport(x) ? 'ok' : ''}">📜 Bericht</span>${(x.screenshots || []).length ? `<span class="badge">📷 ${x.screenshots.length}</span>` : ''}</div></button>`;
+      }).join('')}</div>` : '<div class="empty">Noch keine Missionsberichte. Starte mit „＋ Missionsbericht“.</div>'}`;
+  }
+
+  function newMission() {
+    const m = { id: Store.uid(), createdAt: Date.now(), date: today(), myCharId: (D().myChars[0] || {}).id || '', title: '', team: '', rank: '',
+      members: [], screenshots: [], notes: '', screenInfo: '', ziel: '', beobachtungen: '', auffaelligkeiten: '', ergebnis: '', verluste: '' };
+    // eigenen Charakter gleich als Mitglied eintragen
+    const me = Store.myChar(m.myCharId);
+    if (me) m.members.push({ id: Store.uid(), name: me.name, personId: 'me', self: true, leader: false });
+    missions().push(m); Store.save();
+    state.missionId = m.id; render(); window.scrollTo(0, 0);
+  }
+
+  // Name einer Person im Verzeichnis zuordnen (exakt, sonst ähnliche Schreibweise als Vorschlag)
+  function matchMember(x, m) {
+    const me = Store.myChar(m.myCharId);
+    if (x.self && me) { x.personId = 'me'; x.name = me.name; return x; }
+    const p = findPerson(x.name);
+    if (p) { x.personId = p.id; x.name = p.name; delete x.maybe; }
+    else { const sim = similarPerson(x.name); if (sim) x.maybe = sim.id; }
+    return x;
+  }
+
+  function missionEditor(m) {
+    const ai = AI.available();
+    const leaders = (m.members || []).filter(x => x.leader).length;
+    const memberRow = x => {
+      const p = x.personId && x.personId !== 'me' && Store.person(x.personId), maybe = !x.personId && x.maybe && Store.person(x.maybe);
+      return `<div class="mm-row ${x.leader ? 'lead' : ''}">
+        <input data-mm-name="${x.id}" value="${esc(x.name)}" placeholder="Name">
+        <button class="chip ${x.leader ? 'on' : ''}" data-mm-lead="${x.id}" title="Als Truppführer markieren">⭐ Truppführer</button>
+        <button class="btn ghost small" data-mm-del="${x.id}" title="Entfernen">✕</button>
+        <div class="mm-info small">${x.self ? '<span class="badge ok">du</span>' : p ? `<span class="muted">✓ im Verzeichnis${p.rank ? ' · ' + esc(p.rank) : ''}</span>`
+          : maybe ? `❓ Gemeint: <strong>${esc(maybe.name)}</strong>? <button class="btn small" data-mm-link="${x.id}">Ja, zuordnen</button> <button class="btn ghost small" data-mm-add="${x.id}">Neue Person</button>`
+          : x.name ? `<span class="muted">nicht im Verzeichnis</span> <button class="btn ghost small" data-mm-add="${x.id}">＋ ins Verzeichnis</button>` : ''}</div>
+      </div>`;
+    };
+    app.innerHTML = `
+      <div class="head"><button class="btn ghost" data-act="mission-back">← Missionen</button><button class="btn ghost danger small" data-act="mission-del">Löschen</button></div>
+      <div class="grid2 meta">
+        <label class="wide">Titel (optional)<input data-m="title" value="${esc(m.title)}" placeholder="z. B. Kräuter für die Heilerin"></label>
+        <label>Team / Einheit<input data-m="team" value="${esc(m.team)}" placeholder="z. B. Missionseinheit"></label>
+        <label>Missionsrang<select data-m="rank">${opts(['D', 'C', 'B', 'A', 'S'], m.rank, '–')}</select></label>
+        <label>Datum<input type="date" data-m="date" value="${esc(m.date)}"></label>
+        <label>Verfasser<select data-m="myCharId">${D().myChars.map(c => `<option value="${c.id}" ${c.id === m.myCharId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+      </div>
+      <div class="panel" id="mission-panel">
+        ${sub('m-shots', '📷 Screenshots', (m.screenshots || []).length ? `${m.screenshots.length} Bild(er)` : 'z. B. Teilnehmerliste', `
+          <div class="shots">${(m.screenshots || []).map(id => `<div class="shot"><img data-img="${esc(id)}" alt=""><button class="btn ghost small" data-mshot-del="${esc(id)}">✕</button></div>`).join('')}</div>
+          <div class="btns"><label class="btn small">📤 Screenshots hochladen<input type="file" accept="image/*" multiple data-mshots="1" hidden></label>
+            ${ai && (m.screenshots || []).length ? '<button class="btn primary small" data-act="mission-read">👥 Mitglieder & Infos auslesen</button>' : ''}</div>
+          ${m.screenInfo ? `<label>Aus den Screenshots erkannt<textarea data-m="screenInfo" rows="2">${esc(m.screenInfo)}</textarea></label>` : ''}
+          ${!ai ? '<p class="muted small">Zum automatischen Auslesen eine KI verbinden – sonst Mitglieder unten von Hand eintragen.</p>' : ''}`, true)}
+        ${sub('m-members', '👥 Truppführer & Mitglieder', `${(m.members || []).length} · ${leaders ? leaders + ' Truppführer' : 'kein Truppführer markiert'}`, `
+          <p class="muted small">Truppführer mit ⭐ markieren – sie stehen im Bericht gesondert.</p>
+          ${(m.members || []).map(memberRow).join('')}
+          <div class="row"><input id="mm-new" list="dl-mm" placeholder="Person hinzufügen …">${dl('dl-mm', D().people.map(p => p.name))}<button class="btn ghost small" data-act="mm-add-manual">＋</button></div>`, true)}
+        ${sub('m-notes', '📝 Was ist passiert?', (m.notes || '').trim() ? `${words(m.notes)} Wörter` : 'Notizen oder Stichpunkte', `
+          <div class="row-between"><span class="muted small">Erzählen oder Stichpunkte: Auftrag, Ablauf, was euch aufgefallen ist, Ergebnis, Verletzte.</span>${micBtn('m-notes-ta')}</div>
+          <textarea id="m-notes-ta" data-m="notes" rows="6" placeholder="- Auftrag: Banditenlager an der Grenze auskundschaften&#10;- Spuren von Kiri-Ninja gefunden&#10;- Lager verlassen, Karte sichergestellt&#10;- keine Verletzten">${esc(m.notes)}</textarea>`, true)}
+        ${ai ? `<div class="cta"><button class="btn primary big" data-act="mission-write" ${(m.notes || '').trim() || m.screenInfo ? '' : 'disabled'}>✨ ${mHasReport(m) ? 'Bericht neu schreiben' : 'Bericht schreiben lassen'}</button></div>` : ''}
+        ${sub('m-report', '📜 Bericht (Vorlage Missionsbüro)', mHasReport(m) ? '✓ ausgefüllt' : 'noch leer', `
+          ${Reports.MB_SECTIONS.map(f => `<label>${esc(f.label)} <span class="muted small">(eine Zeile pro Punkt)</span><textarea data-m="${f.key}" rows="3" placeholder="${esc(f.hint)}">${esc(m[f.key])}</textarea></label>`).join('')}
+          <label>Verluste<input data-m="verluste" value="${esc(m.verluste)}" placeholder="z. B. Keine Verluste"></label>`, mHasReport(m))}
+        ${sub('m-preview', '📋 Fertiger Text zum Einfügen', 'Format Missionsbüro', `
+          <pre class="out" id="m-out">${esc(Reports.missionText(m))}</pre>
+          <div class="btns"><button class="btn small" data-act="mission-copy">📋 Kopieren</button><button class="btn ghost small" data-act="mission-share">Teilen</button></div>`, mHasReport(m))}
+      </div>`;
+  }
+
+  async function readMissionShots(m) {
+    const blobs = [];
+    for (const id of m.screenshots || []) { const b = await Images.blobOf(id); if (b) blobs.push(b); }
+    if (!blobs.length) throw new Error('Keine Screenshots gefunden.');
+    const r = await AI.visionJSON(Reports.screenshotPrompt(), blobs);
+    if (r.team && !m.team) m.team = str(r.team);
+    if (/^[DCBAS]$/.test(str(r.rank)) && !m.rank) m.rank = str(r.rank);
+    if (r.ziel && !m.ziel) m.ziel = str(r.ziel);
+    m.screenInfo = [r.ziel && 'Ziel: ' + str(r.ziel), r.other && str(r.other)].filter(Boolean).join(' · ');
+    let added = 0;
+    arr(r.members).forEach(x => {
+      const name = str(x && x.name); if (!name) return;
+      const mem = matchMember({ id: Store.uid(), name, self: !!x.self, leader: !!x.leader }, m);
+      const dup = m.members.find(y => (mem.personId && y.personId === mem.personId) || y.name.toLowerCase() === mem.name.toLowerCase());
+      if (dup) { if (mem.leader) dup.leader = true; return; }
+      m.members.push(mem); added++;
+    });
+    Store.save(); render();
+    toast(`${arr(r.members).length} Namen erkannt, ${added} neu hinzugefügt`);
+  }
+
+  async function writeMission(m) {
+    if (mHasReport(m) && !confirm('Vorhandenen Bericht ersetzen?')) return;
+    const r = await AI.completeJSON({ ...Reports.missionPrompt(m), quality: true });
+    if (r.team && !m.team) m.team = str(r.team);
+    if (!m.members.some(x => x.leader)) arr(r.leaders).map(str).forEach(n => { const x = m.members.find(y => y.name.toLowerCase().includes(n.toLowerCase()) || n.toLowerCase().includes(y.name.toLowerCase())); if (x) x.leader = true; });
+    Reports.MB_SECTIONS.forEach(f => { m[f.key] = arr(r[f.key]).map(str).filter(Boolean).join('\n'); });
+    m.verluste = str(r.verluste) || m.verluste;
+    m.updatedAt = Date.now(); Store.save(); render();
+    toast('Missionsbericht erstellt – kurz prüfen ✓');
+  }
+
   /* ---------- Buch: alle Einträge als Seiten, als PDF speicherbar ---------- */
   const paras = t => esc((t || '').trim()).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
   const fig = (id, cap) => id && state.bookImages !== false ? `<figure class="b-fig"><img data-img="${esc(id)}" alt="">${cap ? `<figcaption>${esc(cap)}</figcaption>` : ''}</figure>` : '';
@@ -1128,8 +1247,22 @@
     if (d.gate) { ev.preventDefault(); state.gate = d.gate; state.gateMsg = ''; return render(); }
     if (gated()) return; // auf der Anmeldeseite sind keine anderen Aktionen möglich
     if (d.go) { ev.preventDefault(); return go(d.go); }
-    if (d.view) return go(d.view);
+    if (d.view) { if (d.view === 'missions') state.missionId = null; return go(d.view); }
     if (d.open) return go('session', { sessionId: d.open, tab: 'notes', detected: [] });
+    // Missionen
+    const m = state.view === 'missions' && state.missionId ? Store.mission(state.missionId) : null;
+    const mem = id => m && (m.members || []).find(x => x.id === id);
+    if (d.mopen) { state.missionId = d.mopen; render(); return window.scrollTo(0, 0); }
+    if (d.mshotDel && m) { if (!confirm('Screenshot entfernen?')) return; Images.remove(d.mshotDel); m.screenshots = m.screenshots.filter(x => x !== d.mshotDel); Store.save(); return render(); }
+    if (d.mmLead && m) { const x = mem(d.mmLead); if (x) { x.leader = !x.leader; Store.save(); } return render(); }
+    if (d.mmDel && m) { m.members = m.members.filter(x => x.id !== d.mmDel); Store.save(); return render(); }
+    if (d.mmLink && m) { const x = mem(d.mmLink), p = x && Store.person(x.maybe); if (p) { x.personId = p.id; x.name = p.name; delete x.maybe; Store.save(); toast(`Zugeordnet: ${p.name}`); } return render(); }
+    if (d.mmAdd && m) {
+      const x = mem(d.mmAdd); if (!x || !x.name.trim()) return;
+      const [first, ...rest] = x.name.trim().split(/\s+/);
+      const p = savePerson(null, { firstName: first, lastName: rest.join(' '), notes: `Aus Missionsbericht ${m.title || m.team || ''} (${fmtDate(m.date)})`.trim() });
+      x.personId = p.id; delete x.maybe; Store.save(); render(); return toast(`${p.name} ins Verzeichnis übernommen`);
+    }
     if (d.tab) { state.tab = d.tab; return render(); }
     if (d.mic) return Speech.toggle(t, document.getElementById(d.mic), m => toast(m, 'error'));
     if (d.part) { const i = s.participants.indexOf(d.part); i < 0 ? s.participants.push(d.part) : s.participants.splice(i, 1); Store.save(); t.classList.toggle('on'); return; }
@@ -1195,6 +1328,19 @@
     switch (d.act) {
       case 'close': return closeModal();
       case 'new-session': return newSession();
+      case 'new-mission': return newMission();
+      case 'mission-back': state.missionId = null; return render();
+      case 'mission-del':
+        if (m && confirm('Diesen Missionsbericht samt Screenshots löschen?')) { (m.screenshots || []).forEach(id => Images.remove(id)); D().missions = missions().filter(x => x.id !== m.id); state.missionId = null; Store.save(); render(); }
+        return;
+      case 'mission-read': return busy(t, () => readMissionShots(m));
+      case 'mission-write': return busy(t, () => writeMission(m));
+      case 'mission-copy': return copy(Reports.missionText(m));
+      case 'mission-share': return share('Missionsbericht', Reports.missionText(m));
+      case 'mm-add-manual': {
+        const v = str(($('#mm-new') || {}).value); if (!v || !m) return;
+        m.members.push(matchMember({ id: Store.uid(), name: v, leader: false, self: false }, m)); Store.save(); return render();
+      }
       case 'del-session':
         if (confirm('Diese Session samt Berichten wirklich löschen?')) { D().sessions = D().sessions.filter(x => x.id !== s.id); Store.save(); go('sessions'); }
         return;
@@ -1302,6 +1448,19 @@
 
   document.addEventListener('input', ev => {
     const el = ev.target, d = el.dataset, s = Store.session(state.sessionId);
+    if (state.view === 'missions' && state.missionId && (d.m || d.mmName)) {
+      const m = Store.mission(state.missionId); if (!m) return;
+      if (d.m) {
+        m[d.m] = el.value; Store.saveSoon();
+        if (d.m === 'myCharId') return render();
+        const out = $('#m-out'); if (out) out.textContent = Reports.missionText(m); // Vorschau live mitführen
+        const w = document.querySelector('[data-act=mission-write]'); if (w) w.disabled = !(m.notes || '').trim() && !m.screenInfo;
+        return;
+      }
+      const x = (m.members || []).find(y => y.id === d.mmName);
+      if (x) { x.name = el.value; delete x.personId; delete x.maybe; Store.saveSoon(); const out = $('#m-out'); if (out) out.textContent = Reports.missionText(m); }
+      return;
+    }
     if (d.s !== undefined) { s[d.s] = el.value; Store.saveSoon(); if (d.s === 'myCharId') render(); return; }
     if (d.qa !== undefined) { s.qa[d.qa].a = el.value; return Store.saveSoon(); }
     if (d.scene !== undefined) { s.analysis.scenes[d.scene][d.k] = el.value; return Store.saveSoon(); }
@@ -1345,6 +1504,14 @@
   });
 
   document.addEventListener('change', ev => {
+    if (ev.target.dataset && ev.target.dataset.mshots && ev.target.files.length) {
+      const m = Store.mission(state.missionId); if (!m) return;
+      (async () => {
+        for (const f of ev.target.files) { const b = await Images.resize(f, 1800, false); m.screenshots = m.screenshots || []; m.screenshots.push(await Images.save(b)); }
+        Store.save(); render(); toast(`${ev.target.files.length} Screenshot(s) hinzugefügt${AI.available() ? ' – jetzt „Mitglieder & Infos auslesen“' : ''}`);
+      })().catch(e => toast('Bild konnte nicht gelesen werden: ' + e.message, 'error'));
+      return;
+    }
     if (ev.target.dataset && ev.target.dataset.detPick !== undefined && ev.target.value) {
       const i = +ev.target.dataset.detPick, fx = $('#det-fix-' + i);
       return linkDetected(Store.session(state.sessionId), i, ev.target.value, fx ? fx.checked : true);
