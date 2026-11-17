@@ -61,6 +61,17 @@
   /* ---------- Navigation ---------- */
   function go(view, extra = {}) { Object.assign(state, { view }, extra); render(); window.scrollTo(0, 0); }
 
+  // Ort in der App merken: Android lädt die App beim Öffnen von Galerie/Kamera manchmal neu –
+  // danach soll man wieder genau dort landen (z. B. im Missionsbericht) statt auf der Startseite
+  const PLACE = 'zenkai.place';
+  const savePlace = () => { try { sessionStorage.setItem(PLACE, JSON.stringify({ view: state.view, sessionId: state.sessionId, tab: state.tab, missionId: state.missionId, at: Date.now() })); } catch (e) { } };
+  function restorePlace() {
+    try {
+      const p = JSON.parse(sessionStorage.getItem(PLACE) || 'null');
+      if (p && Date.now() - p.at < 30 * 60e3) Object.assign(state, { view: p.view || state.view, sessionId: p.sessionId || null, tab: p.tab || 'notes', missionId: p.missionId || null });
+    } catch (e) { }
+  }
+
   /* ---------- Anmeldeseite: ohne Anmeldung ist die App gesperrt ---------- */
   const gated = () => (Sync.configured() && !Sync.loggedIn()) || state.gate === 'newpw';
 
@@ -125,6 +136,7 @@
     document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === state.view || (state.view === 'session' && b.dataset.view === 'sessions')));
     ({ book: viewBook, missions: viewMissions, sessions: viewSessions, session: viewSession, people: viewPeople, mychars: viewMyChars, settings: viewSettings }[state.view] || viewSessions)();
     Images.hydrate(app);
+    savePlace();
   }
 
   /* ---------- Sessions ---------- */
@@ -766,25 +778,34 @@
       </div>`;
   }
 
-  async function readMissionShots(m) {
-    const blobs = [];
-    for (const id of m.screenshots || []) { const b = await Images.blobOf(id); if (b) blobs.push(b); }
+  // onlyIds: nur neu hochgeladene Screenshots auswerten (sonst alle)
+  async function readMissionShots(m, onlyIds) {
+    const mid = m.id, blobs = [];
+    for (const id of onlyIds || m.screenshots || []) { const b = await Images.blobOf(id); if (b) blobs.push(b); }
     if (!blobs.length) throw new Error('Keine Screenshots gefunden.');
     const r = await AI.visionJSON(Reports.screenshotPrompt(), blobs);
+    m = Store.mission(mid) || m; // nach der KI-Antwort frisch holen (Sync kann dazwischen gelaufen sein)
     if (r.team && !m.team) m.team = str(r.team);
     if (/^[DCBAS]$/.test(str(r.rank)) && !m.rank) m.rank = str(r.rank);
     if (r.ziel && !m.ziel) m.ziel = str(r.ziel);
     m.screenInfo = [r.ziel && 'Ziel: ' + str(r.ziel), r.other && str(r.other)].filter(Boolean).join(' · ');
-    let added = 0;
+    let added = 0, created = 0;
     arr(r.members).forEach(x => {
       const name = str(x && x.name); if (!name) return;
       const mem = matchMember({ id: Store.uid(), name, self: !!x.self, leader: !!x.leader }, m);
       const dup = m.members.find(y => (mem.personId && y.personId === mem.personId) || y.name.toLowerCase() === mem.name.toLowerCase());
       if (dup) { if (mem.leader) dup.leader = true; return; }
+      // Unbekannt und keinem ähnlichen Namen zuzuordnen → direkt im Verzeichnis anlegen
+      if (!mem.personId && !mem.maybe) {
+        const [first, ...rest] = name.split(/\s+/);
+        const p = savePerson(null, { firstName: first, lastName: rest.join(' '), notes: `Aus Missionsbericht ${m.title || m.team || ''} (${fmtDate(m.date)})`.replace(/\s+\(/, ' (').trim() });
+        mem.personId = p.id; created++;
+      }
       m.members.push(mem); added++;
     });
     Store.save(); render();
-    toast(`${arr(r.members).length} Namen erkannt, ${added} neu hinzugefügt`);
+    const asks = m.members.filter(x => !x.personId && x.maybe).length;
+    toast(`${arr(r.members).length} Teilnehmer erkannt · ${added} neu in der Liste${created ? ` · ${created} im Verzeichnis angelegt` : ''}${asks ? ` · ${asks} Rückfrage(n)` : ''}`);
   }
 
   async function writeMission(m) {
@@ -1505,11 +1526,20 @@
 
   document.addEventListener('change', ev => {
     if (ev.target.dataset && ev.target.dataset.mshots && ev.target.files.length) {
-      const m = Store.mission(state.missionId); if (!m) return;
+      const mid = state.missionId, files = [...ev.target.files]; // Dateien sofort sichern
+      if (!mid) return;
+      toast(`📷 ${files.length} Screenshot(s) werden geladen …`);
       (async () => {
-        for (const f of ev.target.files) { const b = await Images.resize(f, 1800, false); m.screenshots = m.screenshots || []; m.screenshots.push(await Images.save(b)); }
-        Store.save(); render(); toast(`${ev.target.files.length} Screenshot(s) hinzugefügt${AI.available() ? ' – jetzt „Mitglieder & Infos auslesen“' : ''}`);
-      })().catch(e => toast('Bild konnte nicht gelesen werden: ' + e.message, 'error'));
+        const ids = [];
+        for (const f of files) ids.push(await Images.save(await Images.resize(f, 1800, false)));
+        // Bericht FRISCH holen: ein Sync beim Zurückkehren aus der Bildauswahl kann das Objekt ersetzt haben
+        const m = Store.mission(mid); if (!m) throw new Error('Bericht nicht gefunden.');
+        m.screenshots = [...(m.screenshots || []), ...ids];
+        Store.save(); render();
+        if (AI.available()) { toast('👥 Teilnehmer werden ausgelesen …'); await readMissionShots(Store.mission(mid), ids); }
+        else toast(`${files.length} Screenshot(s) hinzugefügt`);
+      })().catch(e => { toast(e.message, 'error'); render(); });
+      ev.target.value = '';
       return;
     }
     if (ev.target.dataset && ev.target.dataset.detPick !== undefined && ev.target.value) {
@@ -1541,6 +1571,7 @@
     const r = await Sync.handleRedirect().catch(() => null);
     if (r && r.error) state.gateMsg = r.error;
     if (r && r.type === 'recovery') state.gate = 'newpw';
+    restorePlace();
     render();
     updateBadge();
     Sync.init();
